@@ -75,8 +75,9 @@ def test_an_exact_rule_and_an_attribute_rule_may_share_a_value(rules_handler):
     assert handler.saved == "create"
 
 
-def test_editing_a_rule_without_changing_it_saves(rules_handler):
-    handler = rules_handler("john", {"role_account": "engineers"}, {"john": _rule()})
+@pytest.mark.parametrize("edit", [_rule(), {"role_account": "engineers"}])
+def test_editing_a_rule_without_changing_what_it_matches_saves(rules_handler, edit):
+    handler = rules_handler("john", edit, {"john": _rule()})
     handler.handleEdit(None)
     assert handler.saved == "edit"
 

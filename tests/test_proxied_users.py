@@ -9,31 +9,19 @@ import pytest
 from mtls_bridge.config import Mapping, RoleAccount, UserRule
 
 import pki
-from harness import MAPPED_TOKEN, client_of, make_config, running_bridge, wait_for
+from harness import (
+    ANALYST_TOKEN,
+    ENGINEER_TOKEN,
+    JOHN,
+    MAPPED_TOKEN,
+    client_of,
+    make_proxy_config,
+    running_bridge,
+    wait_for,
+)
 
 HEADER = "X-ProxiedEntitiesChain"
-JOHN = "CN=John Smith,OU=Users,O=Org,C=US"
-ANALYST_TOKEN = "analyst-role-token"
-ENGINEER_TOKEN = "engineer-role-token"
-
-
-def _proxy_config(test_pki, upstream, **overrides):
-    """The ``mapped`` cert maps to an account as usual; the ``unmapped`` cert's identity proxies users."""
-    base = make_config(test_pki, upstream)
-    values = dict(
-        mappings=base.mappings
-        + [Mapping(test_pki.ca.issuer_dn, "URI", "spiffe://bridge.test/agent-b", proxies_users=True)],
-        role_accounts=[
-            RoleAccount("analysts", "mcp_analyst", token=ANALYST_TOKEN),
-            RoleAccount("engineers", "mcp_engineer", token=ENGINEER_TOKEN),
-        ],
-        user_rules=[
-            UserRule("john", "dn", JOHN, "analysts"),
-            UserRule("jane", "dn", "CN=Jane Doe,OU=Users,O=Org,C=US", "engineers"),
-        ],
-    )
-    values.update(overrides)
-    return dataclasses.replace(base, **values)
+_proxy_config = make_proxy_config
 
 
 @pytest.fixture
@@ -312,3 +300,17 @@ def test_two_matching_attribute_rules_are_ambiguous(test_pki, upstream, audit_pa
 def test_attribute_rule_that_is_not_a_dn_cannot_be_built():
     with pytest.raises(ValueError):
         UserRule("bad", "attributes", "Users", "analysts")
+
+
+def test_exact_rule_whose_role_account_is_missing_does_not_fall_through(test_pki, upstream, audit_path):
+    """An exact rule still wins when its role account didn't load: John gets no access, not the group's."""
+    rules = [
+        UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts"),
+        UserRule("john", "dn", JOHN, "gone"),
+    ]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
+
+    assert status == 403
+    assert upstream.received == []
+    assert _events(audit_path)[0]["reason"] == "user_unmatched"

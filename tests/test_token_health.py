@@ -11,7 +11,17 @@ from mtls_bridge import __version__
 from mtls_bridge.config import Mapping
 
 import pki
-from harness import MAPPED_TOKEN, client_of, make_config, running_bridge, wait_for
+from harness import (
+    ANALYST_TOKEN,
+    ENGINEER_TOKEN,
+    JOHN,
+    MAPPED_TOKEN,
+    client_of,
+    make_config,
+    make_proxy_config,
+    running_bridge,
+    wait_for,
+)
 
 # Fixed at import: a run that crosses midnight can fail the days-remaining checks.
 TODAY = datetime.date.today()
@@ -246,4 +256,102 @@ def test_health_shows_a_crl_expiring_between_polls(test_pki, upstream, tmp_path)
         health = bridge.health()
 
     assert health["crl"]["expired"] is True
+    assert health["status"] == "degraded"
+
+
+def _role_accounts_expiring_in(days, test_pki, upstream, **overrides):
+    expiry = TODAY + datetime.timedelta(days=days)
+    roles = [dataclasses.replace(r, token_expiry=expiry) for r in make_proxy_config(test_pki, upstream).role_accounts]
+    return make_proxy_config(test_pki, upstream, role_accounts=roles, **overrides)
+
+
+def _role_health(bridge, test_pki):
+    _, health = client_of(bridge, test_pki, test_pki.mapped).health()
+    return health
+
+
+def test_new_role_account_tokens_are_checked_upstream(test_pki, upstream):
+    with running_bridge(make_proxy_config(test_pki, upstream)) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: all(r["token_status"] == "ok" for r in bridge.health()["role_accounts"]))
+
+    assert sorted(r.headers["Authorization"] for r in _initializes(upstream)) == sorted(
+        ["Bearer " + MAPPED_TOKEN, "Bearer " + ANALYST_TOKEN, "Bearer " + ENGINEER_TOKEN]
+    )
+
+
+def test_rotated_role_account_token_is_checked_again(test_pki, upstream):
+    config = make_proxy_config(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: all(r["token_status"] == "ok" for r in bridge.health()["role_accounts"]))
+        rotated = dataclasses.replace(config.role_accounts[0], token="rotated-analyst-token")
+        bridge.apply(dataclasses.replace(config, role_accounts=[rotated, config.role_accounts[1]]))
+        assert bridge.health()["role_accounts"][0]["token_status"] == "unchecked"
+        bridge.check_tokens()
+        wait_for(lambda: bridge.health()["role_accounts"][0]["token_status"] == "ok")
+
+    checked = [r.headers["Authorization"] for r in _initializes(upstream)]
+    assert checked.count("Bearer rotated-analyst-token") == 1
+    assert checked.count("Bearer " + ENGINEER_TOKEN) == 1
+
+
+def test_health_lists_role_accounts_and_never_their_tokens(test_pki, upstream):
+    with running_bridge(_role_accounts_expiring_in(30, test_pki, upstream)) as bridge:
+        health = _role_health(bridge, test_pki)
+
+    assert health["role_accounts"] == [
+        {
+            "name": "analysts",
+            "account": "mcp_analyst",
+            "token_expiry": (TODAY + datetime.timedelta(days=30)).isoformat(),
+            "days_remaining": 30,
+            "expiry_status": "ok",
+            "token_status": "unchecked",
+        },
+        {
+            "name": "engineers",
+            "account": "mcp_engineer",
+            "token_expiry": (TODAY + datetime.timedelta(days=30)).isoformat(),
+            "days_remaining": 30,
+            "expiry_status": "ok",
+            "token_status": "unchecked",
+        },
+    ]
+    # A mapping that proxies users has no token to report.
+    assert [m["account"] for m in health["mappings"]] == ["svc_agent_a"]
+    text = json.dumps(health)
+    assert ANALYST_TOKEN not in text and ENGINEER_TOKEN not in text
+
+
+def test_role_account_token_expiring_soon_warns_once_a_day(test_pki, upstream, tmp_path, caplog):
+    audit = tmp_path / "audit.log"
+    config = _role_accounts_expiring_in(5, test_pki, upstream, audit_log=str(audit))
+    with caplog.at_level(logging.WARNING, logger="mtls_bridge"), running_bridge(config) as bridge:
+        bridge.check_tokens()
+        bridge.check_tokens()
+        health = _role_health(bridge, test_pki)
+
+    assert health["status"] == "warning"
+    assert {r["expiry_status"] for r in health["role_accounts"]} == {"expiring"}
+    events = _expiry_events(audit)
+    assert sorted((e["role_account"], e["user"], e["days_remaining"]) for e in events) == [
+        ("analysts", "mcp_analyst", 5),
+        ("engineers", "mcp_engineer", 5),
+    ]
+    assert all("issuer" not in e for e in events)
+    assert any("mcp_analyst" in r.getMessage() and "expires" in r.getMessage() for r in caplog.records)
+
+
+def test_401_on_a_proxied_call_flags_the_role_account(test_pki, upstream):
+    with running_bridge(make_proxy_config(test_pki, upstream)) as bridge:
+        upstream.status = 401
+        status, _, _ = client_of(bridge, test_pki, test_pki.unmapped).rpc(
+            "tools/list", headers={"X-ProxiedEntitiesChain": JOHN}
+        )
+        health = _role_health(bridge, test_pki)
+
+    assert status == 502
+    statuses = {r["name"]: r["token_status"] for r in health["role_accounts"]}
+    assert statuses == {"analysts": "invalid", "engineers": "unchecked"}
     assert health["status"] == "degraded"

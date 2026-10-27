@@ -51,6 +51,7 @@ Settled in the grilling for #41, which is the spec.
   - a flagged client sends no user header;
   - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
   - no rule matches, or two attribute rules do;
+  - the matching rule's role account didn't load (an unreadable token, say). The user never falls through to a broader rule.
   - an unflagged client sends the header, `ping` included.
 - **Without a user:** a flagged client's `ping` and `/health` work without the header.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.
@@ -68,10 +69,11 @@ Settled in the grilling for #41, which is the spec.
 ## Tokens
 
 - The admin pastes the token and enters its expiry date. The bridge never holds an admin credential.
+- Role-account tokens get the same checks, warnings and flags as mapping tokens. Their audit events name the role account instead of an issuer and identity.
 - Warnings start 14 days ahead, in the operational log, on `/health` and in a daily audit event.
 - Each new or changed token gets one check at config load: an `initialize` sent upstream in the background. An upstream 401 flags it as invalid. A check that can't reach the upstream is retried at the next poll; there is no other background probing.
 - A 401 during forwarding also flags the mapping; a later successful call or a changed token clears it. Past the date, the bridge keeps forwarding and warns.
-- **`/health`** (GET, mapped certs only; others get 403) returns the bridge status (`ok`, `warning` for a token near or past expiry, `degraded` for an invalid token or an expired CRL), its version, whether a CRL is present (a configured CRL is always loaded) and its `nextUpdate`, and each mapping's account, expiry date, days remaining and token status (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401). It never returns tokens, issuers or identities.
+- **`/health`** (GET, mapped certs only; others get 403) returns the bridge status (`ok`, `warning` for a token near or past expiry, `degraded` for an invalid token or an expired CRL), its version, whether a CRL is present (a configured CRL is always loaded) and its `nextUpdate`, and the account, expiry date, days remaining and token status of each mapping that has a token and of each role account (by name) (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401). It never returns tokens, issuers or identities.
 
 ## Audit logging
 

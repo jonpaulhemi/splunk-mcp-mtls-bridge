@@ -105,17 +105,20 @@ def resolve(mapping, header_values, config):
         raise UserRejection(MALFORMED, received)
     dn = identity.dn_key_of(rdns)
     held = collections.Counter(_pairs(rdns))
-    accounts = {account.name: account for account in config.role_accounts}
-    usable = [rule for rule in config.user_rules if rule.role_account in accounts]
     # An exact rule wins; otherwise exactly one attribute rule may match.
-    exact = [rule for rule in usable if rule.match == EXACT_DN and rule.key == dn]
+    exact = [rule for rule in config.user_rules if rule.match == EXACT_DN and rule.key == dn]
     matches = exact or [
-        rule for rule in usable if rule.match == ATTRIBUTES and not collections.Counter(rule.key) - held
+        rule for rule in config.user_rules if rule.match == ATTRIBUTES and not collections.Counter(rule.key) - held
     ]
     if not matches:
         raise UserRejection(UNMATCHED, received)
     if len(matches) > 1:
         raise UserRejection(AMBIGUOUS, received)
+    accounts = {account.name: account for account in config.role_accounts}
+    # The matching rule decides even when its role account didn't load, so the user never falls
+    # through to a broader rule's access.
+    if matches[0].role_account not in accounts:
+        raise UserRejection(UNMATCHED, received)
     return ProxiedUser(dn, matches[0].name, accounts[matches[0].role_account])
 
 
