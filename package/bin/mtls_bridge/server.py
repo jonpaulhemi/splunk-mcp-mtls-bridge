@@ -1,8 +1,12 @@
 """The mTLS listener that forwards MCP requests upstream with a mapped bearer token."""
 
+import collections
 import contextlib
+import dataclasses
+import hashlib
 import json
 import logging
+import socket
 import ssl
 import threading
 import time
@@ -50,11 +54,38 @@ def _parse(body):
     return message if isinstance(message, dict) else None
 
 
+def _tls_fingerprint(config):
+    """A digest of everything the listener's SSLContext is built from, so a replaced file is noticed."""
+    digest = hashlib.sha256()
+    for path in (config.ca_bundle, config.server_cert, config.server_key):
+        with open(path, "rb") as handle:
+            digest.update(hashlib.sha256(handle.read()).digest())
+    digest.update(repr(config.server_key_password).encode())
+    return digest.hexdigest()
+
+
+class ApplyError(Exception):
+    """Part of a new config couldn't be applied; the rest was."""
+
+
+_TLS_FIELDS = ("ca_bundle", "server_cert", "server_key", "server_key_password")
+_UPSTREAM_FIELDS = ("upstream_url", "upstream_ca_bundle", "upstream_verify_hostname")
+_ADDRESS_FIELDS = ("listen_host", "listen_port")
+
+
+def _fields(config, names):
+    return {name: getattr(config, name) for name in names}
+
+
+# What one request is served with, swapped as a whole when the config changes.
+_Live = collections.namedtuple("_Live", "config tls_context upstream")
+
+
 class _ConcurrencyLimiter:
     """Caps in-flight requests per mapping identity."""
 
     def __init__(self, limit):
-        self._limit = limit
+        self.limit = limit
         self._in_flight = {}
         self._lock = threading.Lock()
 
@@ -63,7 +94,7 @@ class _ConcurrencyLimiter:
         """Yield True while holding a slot for ``mapping``, or False if it has none free."""
         key = mapping.key
         with self._lock:
-            acquired = self._in_flight.get(key, 0) < self._limit
+            acquired = self._in_flight.get(key, 0) < self.limit
             if acquired:
                 self._in_flight[key] = self._in_flight.get(key, 0) + 1
         try:
@@ -96,6 +127,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _audited(self, handle):
         """Run ``handle`` for this request, then write its one audit event."""
         started = time.monotonic()
+        # Requests already running keep the config they started with when a new one is applied.
+        self._live = self.server.bridge.live
         # One id per request: returned to the client and sent upstream, so both sides' logs can be joined.
         self.bridge_request_id = uuid.uuid4().hex
         self._status = None
@@ -105,7 +138,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             try:
                 self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
-                self._mapping = resolver.resolve(self.server.bridge.config.mappings, self._peer)
+                self._mapping = resolver.resolve(self._live.config.mappings, self._peer)
             except resolver.Rejection as rejection:
                 self._rejection = rejection.reason
             handle()
@@ -152,7 +185,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _post(self):
         bridge = self.server.bridge
-        body = self._read_body(bridge.config.max_body_bytes)
+        body = self._read_body(self._live.config.max_body_bytes)
         if body is None:
             return
         message = self._message = _parse(body) or {}
@@ -175,7 +208,7 @@ class _Handler(BaseHTTPRequestHandler):
         forwarded = Forwarded(self.client_address[0], self.bridge_request_id, self.headers)
         self._headers_sent = False
         try:
-            with bridge.upstream.post(mapping.token, body, forwarded) as response:
+            with self._live.upstream.post(mapping.token, body, forwarded) as response:
                 if response.status == 401:
                     bridge.token_rejected(mapping)
                     self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", rpc_id)
@@ -263,17 +296,27 @@ class _Handler(BaseHTTPRequestHandler):
 class _Listener(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, bridge):
+    def __init__(self, bridge, address):
         self.bridge = bridge
-        config = bridge.config
-        super().__init__((config.listen_host, config.listen_port), _Handler)
-        self.socket = bridge.tls_context.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
+        super().__init__(address, _Handler)
 
     def finish_request(self, request, client_address):
-        # The handshake runs here, in the worker thread, so a slow client can't stall accept().
-        request.settimeout(self.bridge.config.handshake_timeout)
+        # TLS starts here, in the connection's worker thread, so a slow client can't stall accept(),
+        # and with the SSLContext current when the connection is served, so a replaced CA bundle or
+        # cert applies to new handshakes.
+        live = self.bridge.live
+        request.settimeout(live.config.handshake_timeout)
+        tls = live.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
         try:
-            request.do_handshake()
+            self._handshake_and_handle(tls, client_address, live.config)
+        finally:
+            with contextlib.suppress(OSError):
+                tls.shutdown(socket.SHUT_WR)
+            tls.close()
+
+    def _handshake_and_handle(self, tls, client_address, config):
+        try:
+            tls.do_handshake()
         except (ssl.SSLError, OSError) as exc:
             log.debug("TLS handshake failed from %s:%s: %s", client_address[0], client_address[1], exc)
             reason = (
@@ -283,25 +326,25 @@ class _Listener(ThreadingHTTPServer):
                 client_address[0], client_address[1], getattr(exc, "verify_code", None), reason
             )
             return
-        request.settimeout(self.bridge.config.client_timeout)
-        super().finish_request(request, client_address)
+        tls.settimeout(config.client_timeout)
+        super().finish_request(tls, client_address)
 
 
 class BridgeServer:
     """The bridge. ``on_token_rejected`` is called with a Mapping whose token the upstream refused."""
 
     def __init__(self, config, on_token_rejected=None):
-        self.config = config
-        self.tls_context = listener_context(config)
-        self.upstream = Upstream(config)
+        self._tls_fingerprint = _tls_fingerprint(config)
+        self.live = _Live(config, listener_context(config), Upstream(config))
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.audit = AuditLog(config.audit_log)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self._on_token_rejected = on_token_rejected
-        self._listener = _Listener(self)
-        self._thread = threading.Thread(
-            target=self._listener.serve_forever, args=(0.1,), name="mtls-bridge", daemon=True
-        )
+        self._listener = _Listener(self, config.listen_address)
+
+    @property
+    def config(self):
+        return self.live.config
 
     @property
     def address(self):
@@ -309,8 +352,77 @@ class BridgeServer:
 
     def start(self):
         self.handshake_failures.start()
-        self._thread.start()
+        self._start_serving(self._listener)
         return self
+
+    def apply(self, config):
+        """Serve ``config`` from the next request on. Call it from one thread only, as ``stop`` is.
+
+        Mappings and tokens always apply, so a deleted mapping is revoked even when the rest can't be.
+        A changed CA bundle, cert, key or key password rebuilds the SSLContext for new connections
+        (open keep-alive connections keep theirs until they close); a changed bind address or port
+        moves the listener. If either fails, or the upstream settings can't be loaded, those parts
+        keep their current values and ApplyError says why. The audit file and handshake window are
+        fixed at startup.
+        """
+        live = self.live
+        problems = []
+        fingerprint, context = self._tls_fingerprint, live.tls_context
+        try:
+            new_fingerprint = _tls_fingerprint(config)
+            if new_fingerprint != fingerprint:
+                fingerprint, context = new_fingerprint, listener_context(config)
+        except (OSError, ValueError) as exc:
+            problems.append(f"listener certificate or CA bundle: {exc}")
+            config = dataclasses.replace(config, **_fields(live.config, _TLS_FIELDS))
+        try:
+            upstream = Upstream(config)
+        except (OSError, ValueError) as exc:
+            problems.append(f"MCP Server connection: {exc}")
+            config = dataclasses.replace(config, **_fields(live.config, _UPSTREAM_FIELDS))
+            upstream = live.upstream
+        listener = None
+        if config.listen_address != live.config.listen_address:
+            try:
+                listener = self._bind(config.listen_address)
+            except OSError as exc:
+                problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
+                config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
+        self.live = _Live(config, context, upstream)
+        self._tls_fingerprint = fingerprint
+        self.limiter.limit = config.max_concurrent_per_identity
+        if listener is not None and listener is not self._listener:
+            old, self._listener = self._listener, listener
+            self._start_serving(listener)
+            old.shutdown()
+            old.server_close()
+            log.info("listener moved to %s:%s", *self.address)
+        if problems:
+            raise ApplyError("; ".join(problems))
+
+    def _bind(self, address):
+        """A listener on ``address``. Raises OSError, leaving the current listener serving, if it can't bind.
+
+        If the port is held by the current listener (say a host change from 0.0.0.0 to 127.0.0.1 on
+        the same port), the current one closes first and comes back if the new bind fails.
+        """
+        try:
+            return _Listener(self, address)
+        except OSError:
+            current = self.live.config.listen_address
+            if address[1] != current[1] or address[1] == 0:
+                raise
+        self._listener.shutdown()
+        self._listener.server_close()
+        try:
+            return _Listener(self, address)
+        except OSError:
+            self._listener = _Listener(self, current)
+            self._start_serving(self._listener)
+            raise
+
+    def _start_serving(self, listener):
+        threading.Thread(target=listener.serve_forever, args=(0.1,), name="mtls-bridge", daemon=True).start()
 
     def stop(self):
         self._listener.shutdown()

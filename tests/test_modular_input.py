@@ -20,6 +20,8 @@ from fake_splunkd import AUDIT_INPUT_PATH
 from harness import ROOT, SESSION_KEY, Client, wait_for
 
 SCRIPT = ROOT / "package" / "bin" / "mtls_bridge_daemon.py"
+# The daemon's config poll interval in these tests (30 s in production).
+POLL_SECONDS = 0.3
 
 
 @pytest.fixture
@@ -58,7 +60,7 @@ def _start(splunkd, splunk_home, checkpoint_dir, session_key=SESSION_KEY):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=dict(os.environ, SPLUNK_HOME=str(splunk_home)),
+        env=dict(os.environ, SPLUNK_HOME=str(splunk_home), TA_MTLS_BRIDGE_POLL_SECONDS=str(POLL_SECONDS)),
     )
     process.stdin.write(_input_xml(splunkd, checkpoint_dir, session_key).encode())
     process.stdin.close()
@@ -253,3 +255,87 @@ def test_audit_settings_repoint_the_monitor_input(
     finally:
         process.terminate()
         process.wait(10)
+
+
+def _status(test_pki, port, issued, ca=None):
+    """The HTTP status of a tools/list call, "handshake failed" or "not listening"."""
+    client = Client(("127.0.0.1", port), ca or test_pki.ca.cert_path, issued)
+    try:
+        return client.rpc("tools/list")[0]
+    except ConnectionRefusedError:
+        return "not listening"
+    except (ssl.SSLError, ConnectionResetError, BrokenPipeError):
+        return "handshake failed"
+
+
+def _eventually(condition):
+    wait_for(condition, timeout=POLL_SECONDS * 10)
+
+
+def test_mapping_added_after_startup_works_without_a_restart(test_pki, splunkd, bridge_port, daemon):
+    splunkd.empty.add("mappings.json")
+    _eventually(lambda: _status(test_pki, bridge_port, test_pki.mapped) == 403)
+
+    splunkd.empty.discard("mappings.json")
+    _eventually(lambda: _status(test_pki, bridge_port, test_pki.mapped) == 200)
+    assert daemon.poll() is None
+
+
+def test_deleted_mapping_is_revoked_on_the_next_poll(test_pki, splunkd, bridge_port, daemon):
+    assert _status(test_pki, bridge_port, test_pki.mapped) == 200
+    splunkd.empty.add("mappings.json")
+    _eventually(lambda: _status(test_pki, bridge_port, test_pki.mapped) == 403)
+
+
+def test_changed_token_is_used_for_the_next_request(test_pki, upstream, splunkd, bridge_port, daemon):
+    splunkd.content_overrides["mappings.json"] = {"token": "rotated-token"}
+
+    def forwards_new_token():
+        upstream.received.clear()
+        return (
+            _status(test_pki, bridge_port, test_pki.mapped) == 200
+            and upstream.received[-1].headers["Authorization"] == "Bearer rotated-token"
+        )
+
+    _eventually(forwards_new_token)
+
+
+def test_replaced_ca_bundle_takes_effect_for_new_handshakes(test_pki, splunkd, splunk_home, bridge_port, tmp_path):
+    bundle = tmp_path / "clients.pem"
+    bundle.write_bytes(test_pki.ca.cert_path.read_bytes())
+    splunkd.content_overrides["settings_listener.json"]["ca_bundle"] = str(bundle)
+    process = _start(splunkd, splunk_home, tmp_path)
+    try:
+        _eventually(lambda: _status(test_pki, bridge_port, test_pki.mapped) == 200)
+        assert _status(test_pki, bridge_port, test_pki.other_ca_client) == "handshake failed"
+
+        bundle.write_bytes(test_pki.ca.cert_path.read_bytes() + test_pki.other_ca.cert_path.read_bytes())
+        # The other CA's client now gets through the handshake; it has no mapping, so it's refused.
+        _eventually(lambda: _status(test_pki, bridge_port, test_pki.other_ca_client) == 403)
+    finally:
+        process.terminate()
+        process.wait(10)
+
+
+@pytest.mark.parametrize(
+    "breakage",
+    [
+        lambda splunkd: splunkd.content_overrides["settings_listener.json"].update(listen_port="not-a-port"),
+        lambda splunkd: splunkd.content_overrides["settings_listener.json"].update(ca_bundle="/nonexistent.pem"),
+        lambda splunkd: splunkd.empty.add("settings_listener.json"),
+    ],
+    ids=["invalid", "unloadable", "missing"],
+)
+def test_bad_config_keeps_the_last_good_one_serving(test_pki, splunkd, splunk_home, bridge_port, daemon, breakage):
+    breakage(splunkd)
+    _eventually(lambda: "keeping the last good configuration" in _log(splunk_home))
+    assert _status(test_pki, bridge_port, test_pki.mapped) == 200
+    assert daemon.poll() is None
+
+
+def test_session_key_rejected_mid_run_makes_the_daemon_exit(test_pki, splunkd, splunk_home, bridge_port, daemon):
+    assert _status(test_pki, bridge_port, test_pki.mapped) == 200
+    splunkd.session_key = "rotated-by-splunkd"
+
+    assert daemon.wait(POLL_SECONDS * 10) == 1
+    assert "rejected the session key" in _log(splunk_home)
