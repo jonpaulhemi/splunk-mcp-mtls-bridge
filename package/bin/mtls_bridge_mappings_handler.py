@@ -1,7 +1,7 @@
 """REST handler for the Mappings page: refuses rows that can never match, or that match another row's certs."""
 
+from splunk import admin
 from splunktaucclib.rest_handler.admin_external import AdminExternalHandler
-from splunktaucclib.rest_handler.error import RestError
 
 from mtls_bridge.identity import mapping_row_problem
 
@@ -25,4 +25,6 @@ class MappingsHandler(AdminExternalHandler):
     def _check(self, row, rows=None):
         problem = mapping_row_problem(self.callerArgs.id, row, self._rows() if rows is None else rows)
         if problem:
-            raise RestError(400, problem)
+            # splunkd turns only AdminManagerException subclasses into their HTTP status; UCC's RestError
+            # isn't one, so it came back as a 500.
+            raise admin.ArgValidationException(problem)
