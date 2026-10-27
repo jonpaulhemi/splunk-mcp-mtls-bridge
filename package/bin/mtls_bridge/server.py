@@ -17,8 +17,10 @@ _TLS12_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20"
 
 _FORWARDED_RESPONSE_HEADERS = ("Content-Type",)
 
-# JSON-RPC error codes in the implementation-defined server error range.
+_ERR_INVALID_REQUEST = -32600
+# Codes in JSON-RPC's implementation-defined server error range.
 _ERR_FORBIDDEN = -32001
+_ERR_UPSTREAM = -32002
 
 
 def listener_context(config):
@@ -56,27 +58,46 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         bridge = self.server.bridge
-        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = self._read_body()
+        if body is None:
+            return
         peer = identity.from_peercert(self.connection.getpeercert())
         try:
             mapping = resolver.resolve(bridge.config.mappings, peer)
         except resolver.Rejection as rejection:
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {rejection.reason}", body)
             return
-        status, headers, payload = bridge.forward(mapping, body)
-        self.send_response(status)
-        for name, value in headers:
-            self.send_header(name, value)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            status, headers, payload = bridge.forward(mapping, body)
+        except (OSError, http.client.HTTPException) as exc:
+            log.warning("upstream request failed: %s", exc)
+            self._send_rpc_error(502, _ERR_UPSTREAM, "upstream MCP server unavailable", body)
+            return
+        self._send(status, headers, payload)
 
-    def _send_rpc_error(self, status, code, message, body):
+    def _read_body(self):
+        """Read the request body, or answer with an error and return None."""
+        length = self.headers.get("Content-Length")
+        if length is None:
+            self.close_connection = True
+            self._send_rpc_error(411, _ERR_INVALID_REQUEST, "Content-Length required")
+            return None
+        if not length.isdigit():
+            self.close_connection = True
+            self._send_rpc_error(400, _ERR_INVALID_REQUEST, "invalid Content-Length")
+            return None
+        return self.rfile.read(int(length))
+
+    def _send_rpc_error(self, status, code, message, body=b""):
         payload = json.dumps(
             {"jsonrpc": "2.0", "id": _request_id(body), "error": {"code": code, "message": message}}
         ).encode()
+        self._send(status, [("Content-Type", "application/json")], payload)
+
+    def _send(self, status, headers, payload):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        for name, value in headers:
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -99,7 +120,7 @@ class _Listener(ThreadingHTTPServer):
         except (ssl.SSLError, OSError) as exc:
             log.info("TLS handshake failed from %s:%s: %s", client_address[0], client_address[1], exc)
             return
-        request.settimeout(self.bridge.config.upstream_timeout)
+        request.settimeout(self.bridge.config.client_timeout)
         super().finish_request(request, client_address)
 
 
@@ -125,9 +146,6 @@ class BridgeServer:
     def stop(self):
         self._listener.shutdown()
         self._listener.server_close()
-
-    def serve_forever(self):
-        self._listener.serve_forever()
 
     def forward(self, mapping, body):
         conn = http.client.HTTPSConnection(

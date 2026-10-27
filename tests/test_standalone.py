@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from conftest import ROOT, Client, make_config
+from harness import ROOT, Client, make_config
 
 BIN = ROOT / "package" / "bin"
 
@@ -32,7 +32,7 @@ def test_bridge_runs_as_a_standalone_process(test_pki, upstream, tmp_path, unuse
         stderr=subprocess.STDOUT,
     )
     try:
-        client = Client(("127.0.0.1", unused_port), test_pki.ca.cert_path, test_pki.mapped.cert, test_pki.mapped.key)
+        client = Client(("127.0.0.1", unused_port), test_pki.ca.cert_path, test_pki.mapped)
         deadline = time.monotonic() + 10
         while True:
             try:

@@ -1,7 +1,7 @@
 """Turns a verified peer cert into an issuer string and a set of typed identities."""
 
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Tuple
+from typing import FrozenSet, Tuple
 
 # Attribute names as Python's ssl module reports them, mapped to RFC 4514 short names.
 _ATTRIBUTE_NAMES = {
@@ -29,7 +29,6 @@ _SAN_TYPES = {
 class PeerIdentity:
     issuer: str
     identities: FrozenSet[Tuple[str, str]]
-    subject_cn: Optional[str]
 
 
 def _escape(value):
@@ -56,10 +55,8 @@ def from_peercert(cert):
     for san_type, value in cert.get("subjectAltName", ()):
         if san_type in _SAN_TYPES:
             identities.add((_SAN_TYPES[san_type], value))
-    subject_cn = None
     for rdn in cert.get("subject", ()):
         for attr, value in rdn:
             if attr == "commonName":
-                subject_cn = value
                 identities.add(("CN", value))
-    return PeerIdentity(issuer=rfc4514(cert.get("issuer", ())), identities=frozenset(identities), subject_cn=subject_cn)
+    return PeerIdentity(issuer=rfc4514(cert.get("issuer", ())), identities=frozenset(identities))

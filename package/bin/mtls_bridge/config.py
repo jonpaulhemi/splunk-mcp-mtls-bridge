@@ -29,5 +29,7 @@ class Config:
     upstream_ca_bundle: Optional[str] = None
     upstream_verify_hostname: bool = True
     handshake_timeout: float = 10.0
+    # How long to wait on a quiet client between and during requests, after the handshake.
+    client_timeout: float = 30.0
     upstream_timeout: float = 300.0
     mappings: List[Mapping] = field(default_factory=list)

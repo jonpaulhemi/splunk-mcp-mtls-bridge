@@ -3,7 +3,7 @@
 import json
 import ssl
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -18,17 +18,9 @@ class Received:
         return json.loads(self.body)
 
 
-@dataclass
-class Reply:
-    status: int = 200
-    body: dict = field(default_factory=dict)
-    headers: dict = field(default_factory=dict)
-
-
 class FakeUpstream:
-    def __init__(self, cert, key):
+    def __init__(self, issued):
         self.received = []
-        self.reply = None
         self._lock = threading.Lock()
         upstream = self
 
@@ -43,29 +35,26 @@ class FakeUpstream:
                 body = self.rfile.read(length)
                 with upstream._lock:
                     upstream.received.append(Received(self.command, self.path, dict(self.headers.items()), body))
-                reply = upstream.reply or upstream.default_reply(body)
-                payload = json.dumps(reply.body).encode()
-                self.send_response(reply.status)
+                payload = json.dumps(upstream.tools_list_result(body)).encode()
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json")
-                for name, value in reply.headers.items():
-                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(str(cert), str(key))
+        context.load_cert_chain(str(issued.cert), str(issued.key))
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.socket = context.wrap_socket(self._server.socket, server_side=True)
         self._thread = threading.Thread(target=self._server.serve_forever, args=(0.05,), daemon=True)
 
     @staticmethod
-    def default_reply(body):
+    def tools_list_result(body):
         try:
             request_id = json.loads(body).get("id")
         except ValueError:
             request_id = None
-        return Reply(body={"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{"name": "splunk_run_query"}]}})
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{"name": "splunk_run_query"}]}}
 
     @property
     def url(self):
