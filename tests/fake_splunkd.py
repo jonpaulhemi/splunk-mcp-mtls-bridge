@@ -19,6 +19,8 @@ ROUTES = {
     APP_PATH + "/ta_mtls_bridge_settings/audit": "settings_audit.json",
     AUDIT_INPUT_PATH: "conf_inputs_audit.json",
     APP_PATH + "/ta_mtls_bridge_mappings": "mappings.json",
+    APP_PATH + "/ta_mtls_bridge_role_accounts": "role_accounts.json",
+    APP_PATH + "/ta_mtls_bridge_user_rules": "user_rules.json",
     "/services/configs/conf-server/sslConfig": "conf_server_sslconfig.json",
 }
 

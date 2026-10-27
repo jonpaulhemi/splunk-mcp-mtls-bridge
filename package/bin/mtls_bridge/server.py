@@ -15,7 +15,7 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, certificate, resolver, tokens
+from . import __version__, certificate, resolver, tokens, users
 from .audit import AuditLog, HandshakeFailures
 from .crl import CrlKeeper
 from .tokens import TokenMonitor
@@ -166,6 +166,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._aborted = None  # why the response was cut short after its headers went out
         self._message = {}
         self._peer = self._mapping = self._rejection = None
+        self._user = None  # the ProxiedUser the call is for, when the client proxies users
+        self._user_received = None  # the user header as received, for a refused proxied call
         try:
             try:
                 self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
@@ -194,6 +196,8 @@ class _Handler(BaseHTTPRequestHandler):
             fields["warning"] = self._live.crl.warning
         audit = self.server.bridge.audit
         if self._rejection is not None:
+            if self._user_received is not None:
+                fields["user_dn"] = self._user_received
             audit.write("rejection", reason=self._rejection, **fields, **(self._peer.describe() if self._peer else {}))
         elif self._mapping is not None:
             audit.write("call", **fields, **self._call_fields(elapsed))
@@ -207,6 +211,13 @@ class _Handler(BaseHTTPRequestHandler):
             user=mapping.account,
             latency_ms=round(elapsed * 1000, 1),
         )
+        if self._user is not None:
+            fields.update(
+                user=self._user.role_account.account,
+                user_dn=self._user.dn,
+                user_rule=self._user.rule,
+                role_account=self._user.role_account.name,
+            )
         params = self._message.get("params")
         if self._message.get("method") == "tools/call" and isinstance(params, dict):
             arguments = json.dumps(params.get("arguments"), ensure_ascii=False).encode()
@@ -238,23 +249,31 @@ class _Handler(BaseHTTPRequestHandler):
             # Answered here so health checks don't spend the upstream's shared rate limit.
             self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
             return
+        try:
+            self._user = users.resolve(mapping, self.headers.get_all(users.HEADER), self._live.config)
+        except users.UserRejection as rejection:
+            self._rejection, self._user_received = rejection.reason, rejection.received
+            self._send_rpc_error(403, _ERR_FORBIDDEN, rejection.message, rpc_id)
+            return
+        # The account and token the call runs as.
+        credential = mapping if self._user is None else self._user.role_account
         with bridge.limiter.slot(mapping) as acquired:
             if not acquired:
                 self._send_rpc_error(429, _ERR_BUSY, "too many concurrent requests for this client", rpc_id)
                 return
-            self._forward(bridge, mapping, body, rpc_id)
+            self._forward(bridge, credential, body, rpc_id)
 
-    def _forward(self, bridge, mapping, body, rpc_id):
+    def _forward(self, bridge, credential, body, rpc_id):
         forwarded = Forwarded(self.client_address[0], self.bridge_request_id, self.headers)
         self._headers_sent = False
         try:
-            with self._live.upstream.post(mapping.token, body, forwarded) as response:
+            with self._live.upstream.post(credential.token, body, forwarded) as response:
                 if response.status == 401:
-                    bridge.tokens.rejected(mapping)
+                    bridge.tokens.rejected(credential)
                     self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", rpc_id)
                     return
                 if 200 <= response.status < 300:
-                    bridge.tokens.accepted(mapping)
+                    bridge.tokens.accepted(credential)
                 self._relay(response)
         except UpstreamTimeout:
             self._fail(504, "upstream MCP server timed out", rpc_id)
@@ -335,6 +354,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._headers_sent = True
 
 
+def _token_holders(config):
+    """The mappings whose tokens the token monitor watches: those that don't proxy users, which have none."""
+    return [mapping for mapping in config.mappings if not mapping.proxies_users]
+
+
 class _Listener(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -392,7 +416,7 @@ class BridgeServer:
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self.tokens = TokenMonitor(self.audit)
-        self.tokens.update(config.mappings, self.live.upstream)
+        self.tokens.update(_token_holders(config), self.live.upstream)
 
     @property
     def config(self):
@@ -439,7 +463,7 @@ class BridgeServer:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
         self.live = _Live(config, context, upstream, crl_state)
-        self.tokens.update(config.mappings, upstream)
+        self.tokens.update(_token_holders(config), upstream)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
         if listener is not None and listener is not self._listener:

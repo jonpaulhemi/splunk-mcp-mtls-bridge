@@ -1,0 +1,59 @@
+{
+  "links": {},
+  "origin": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_user_rules",
+  "updated": "2026-10-27T10:00:00+00:00",
+  "generator": {
+    "build": "abc123",
+    "version": "10.4.0"
+  },
+  "entry": [
+    {
+      "name": "john",
+      "id": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_user_rules/john",
+      "updated": "1970-01-01T00:00:00+00:00",
+      "links": {},
+      "author": "nobody",
+      "acl": {
+        "app": "TA-mtls-bridge",
+        "owner": "nobody",
+        "sharing": "app"
+      },
+      "content": {
+        "eai:acl": null,
+        "eai:appName": "TA-mtls-bridge",
+        "eai:userName": "nobody",
+        "disabled": false,
+        "match": "dn",
+        "value": "CN=John Smith,OU=Users,O=Org,C=US",
+        "role_account": "analysts"
+      }
+    },
+    {
+      "name": "jane",
+      "id": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_user_rules/jane",
+      "updated": "1970-01-01T00:00:00+00:00",
+      "links": {},
+      "author": "nobody",
+      "acl": {
+        "app": "TA-mtls-bridge",
+        "owner": "nobody",
+        "sharing": "app"
+      },
+      "content": {
+        "eai:acl": null,
+        "eai:appName": "TA-mtls-bridge",
+        "eai:userName": "nobody",
+        "disabled": false,
+        "match": "dn",
+        "value": "CN=Jane Doe,OU=Users,O=Org,C=US",
+        "role_account": "engineers"
+      }
+    }
+  ],
+  "paging": {
+    "total": 2,
+    "perPage": 0,
+    "offset": 0
+  },
+  "messages": []
+}

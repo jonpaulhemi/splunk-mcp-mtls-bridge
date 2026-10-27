@@ -4,21 +4,26 @@ import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from . import identity
+from . import identity, users
 
 DEFAULT_UPSTREAM_URL = "https://127.0.0.1:8089/services/mcp"
 
 
 @dataclass(frozen=True)
 class Mapping:
-    """Maps a cert (issuer + one typed identity) to a Splunk account and its MCP token."""
+    """Maps a cert (issuer + one typed identity) to a Splunk account and its MCP token.
+
+    A mapping that proxies users has no account or token: each call names a user, whose rule picks
+    the role account the call runs as.
+    """
 
     issuer: str
     identity_type: str
     identity_value: str
-    account: str
-    token: str = field(repr=False)
+    account: str = ""
+    token: str = field(default="", repr=False)
     token_expiry: Optional[datetime.date] = None
+    proxies_users: bool = False
 
     def __post_init__(self):
         """Raises ValueError if the issuer, type or value can't describe any certificate."""
@@ -27,6 +32,39 @@ class Mapping:
     @property
     def key(self):
         """The identity this mapping matches, canonicalised: (issuer, identity type, identity value)."""
+        return self._key
+
+
+@dataclass(frozen=True)
+class RoleAccount:
+    """A Splunk account holding the roles a group of proxied users should have, and its MCP token."""
+
+    name: str
+    account: str
+    token: str = field(repr=False)
+    token_expiry: Optional[datetime.date] = None
+
+    @property
+    def key(self):
+        return ("role_account", self.name)
+
+
+@dataclass(frozen=True)
+class UserRule:
+    """Sends proxied users whose DN matches ``value`` to the role account named ``role_account``."""
+
+    name: str
+    match: str  # users.EXACT_DN
+    value: str
+    role_account: str
+
+    def __post_init__(self):
+        """Raises ValueError if the rule can never match a user."""
+        object.__setattr__(self, "_key", users.rule_key(self.match, self.value))
+
+    @property
+    def key(self):
+        """The canonical form of what the rule matches."""
         return self._key
 
 
@@ -59,6 +97,8 @@ class Config:
     # Failed handshakes from one IP within this many seconds become one audit event.
     handshake_audit_window: float = 60.0
     mappings: List[Mapping] = field(default_factory=list)
+    role_accounts: List[RoleAccount] = field(default_factory=list)
+    user_rules: List[UserRule] = field(default_factory=list)
 
     @property
     def listen_address(self):

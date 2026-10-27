@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import Config, Mapping
+from .config import Config, Mapping, RoleAccount, UserRule
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +20,8 @@ APP = "TA-mtls-bridge"
 _SETTINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_settings/listener"
 _AUDIT_SETTINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_settings/audit"
 _MAPPINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_mappings"
+_ROLE_ACCOUNTS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_role_accounts"
+_USER_RULES = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_user_rules"
 _SERVER_SSL_CONFIG = "/services/configs/conf-server/sslConfig"
 
 # The audit file, as default/inputs.conf monitors it. Kept out of var/log/splunk, which Splunk
@@ -59,6 +61,8 @@ def load(server_uri, session_key, splunk_home):
     rest = _Rest(server_uri, session_key)
     settings = rest.entries(_SETTINGS, {"--cred--": "1"})[0]["content"]
     rows = rest.entries(_MAPPINGS, {"--cred--": "1", "count": "0"}, required=False)
+    role_accounts = rest.entries(_ROLE_ACCOUNTS, {"--cred--": "1", "count": "0"}, required=False)
+    user_rules = rest.entries(_USER_RULES, {"count": "0"}, required=False)
 
     def path(value):
         return value.replace("$SPLUNK_HOME", splunk_home) if value else value
@@ -85,6 +89,8 @@ def load(server_uri, session_key, splunk_home):
         audit_log=path(AUDIT_LOG),
         crl_file=path(settings.get("crl_file")) or None,
         mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
+        role_accounts=[a for a in (_role_account(row) for row in role_accounts) if a is not None],
+        user_rules=[r for r in (_user_rule(row) for row in user_rules) if r is not None],
     )
     # Settings left empty keep Config's defaults.
     for name in ("listen_host", "upstream_url", "crl_check", "crl_expiry"):
@@ -146,27 +152,71 @@ def _working_key_password(cert, key, password):
 
 def _mapping(entry):
     content = entry["content"]
-    token = content.get("token")
-    if not token or set(token) == {"*"}:
-        log.error("mapping %s has no readable token; skipping it", entry["name"])
-        return None
-    expiry = content.get("token_expiry")
-    try:
-        expiry = datetime.date.fromisoformat(expiry) if expiry else None
-    except ValueError:
-        log.warning("mapping %s has an unreadable token expiry %r", entry["name"], expiry)
-        expiry = None
+    proxies_users = _flag(content.get("proxies_users"), False)
+    if proxies_users:
+        # Its calls run as the role accounts its users' rules name.
+        token, expiry = "", None
+    else:
+        token = _token(entry, "mapping")
+        if token is None:
+            return None
+        expiry = _expiry(entry, "mapping")
     try:
         return Mapping(
             issuer=content.get("issuer", ""),
             identity_type=content.get("identity_type", ""),
             identity_value=content.get("identity_value", ""),
-            account=content.get("account", ""),
+            account="" if proxies_users else content.get("account", ""),
             token=token,
             token_expiry=expiry,
+            proxies_users=proxies_users,
         )
     except ValueError as exc:
         log.error("mapping %s can never match a certificate (%s); skipping it", entry["name"], exc)
+        return None
+
+
+def _role_account(entry):
+    token = _token(entry, "role account")
+    if token is None:
+        return None
+    return RoleAccount(
+        name=entry["name"],
+        account=entry["content"].get("account", ""),
+        token=token,
+        token_expiry=_expiry(entry, "role account"),
+    )
+
+
+def _user_rule(entry):
+    content = entry["content"]
+    try:
+        return UserRule(
+            name=entry["name"],
+            match=content.get("match", ""),
+            value=content.get("value", ""),
+            role_account=content.get("role_account", ""),
+        )
+    except ValueError as exc:
+        log.error("user rule %s can never match a user (%s); skipping it", entry["name"], exc)
+        return None
+
+
+def _token(entry, kind):
+    """The row's decrypted token, or None (logged) if splunkd couldn't give one."""
+    token = entry["content"].get("token")
+    if not token or set(token) == {"*"}:
+        log.error("%s %s has no readable token; skipping it", kind, entry["name"])
+        return None
+    return token
+
+
+def _expiry(entry, kind):
+    expiry = entry["content"].get("token_expiry")
+    try:
+        return datetime.date.fromisoformat(expiry) if expiry else None
+    except ValueError:
+        log.warning("%s %s has an unreadable token expiry %r", kind, entry["name"], expiry)
         return None
 
 

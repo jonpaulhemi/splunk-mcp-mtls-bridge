@@ -27,6 +27,10 @@
                                 "field": "identity_value"
                             },
                             {
+                                "label": "Proxies users",
+                                "field": "proxies_users"
+                            },
+                            {
                                 "label": "Splunk account",
                                 "field": "account"
                             },
@@ -47,6 +51,10 @@
                             {
                                 "label": "Identity",
                                 "field": "identity_value"
+                            },
+                            {
+                                "label": "Proxies users",
+                                "field": "proxies_users"
                             },
                             {
                                 "label": "Splunk account",
@@ -147,10 +155,175 @@
                             ]
                         },
                         {
+                            "type": "checkbox",
+                            "label": "Proxies users",
+                            "field": "proxies_users",
+                            "help": "Check this if the client acts for many users and names each call's user in the X-ProxiedEntitiesChain header. Its calls then run as the role account the user's rule picks, so it needs no Splunk account or token of its own.",
+                            "defaultValue": 0,
+                            "modifyFieldsOnValue": [
+                                {
+                                    "fieldValue": 1,
+                                    "fieldsToModify": [
+                                        {
+                                            "fieldId": "account",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token_expiry",
+                                            "display": false,
+                                            "required": false
+                                        }
+                                    ]
+                                },
+                                {
+                                    "fieldValue": true,
+                                    "fieldsToModify": [
+                                        {
+                                            "fieldId": "account",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token_expiry",
+                                            "display": false,
+                                            "required": false
+                                        }
+                                    ]
+                                },
+                                {
+                                    "fieldValue": "[[any_other_value]]",
+                                    "fieldsToModify": [
+                                        {
+                                            "fieldId": "account",
+                                            "display": true,
+                                            "required": true
+                                        },
+                                        {
+                                            "fieldId": "token",
+                                            "display": true,
+                                            "required": true
+                                        },
+                                        {
+                                            "fieldId": "token_expiry",
+                                            "display": true,
+                                            "required": true
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
                             "type": "text",
                             "label": "Splunk account",
                             "field": "account",
-                            "help": "The local Splunk account this client acts as. The token below must belong to it.",
+                            "help": "The local Splunk account this client acts as. The token below must belong to it. Not used when the client proxies users.",
+                            "required": false,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Account must be 1 to 256 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "MCP token",
+                            "field": "token",
+                            "help": "The account's encrypted MCP token from the Splunk MCP Server app. Stored encrypted in Splunk's credential store.",
+                            "required": false,
+                            "encrypted": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "Token expiry date",
+                            "field": "token_expiry",
+                            "help": "The date the token expires, as YYYY-MM-DD. The bridge warns 14 days ahead.",
+                            "required": false,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                                    "errorMsg": "Enter the expiry date as YYYY-MM-DD."
+                                }
+                            ]
+                        }
+                    ],
+                    "restHandlerModule": "mtls_bridge_mappings_handler",
+                    "restHandlerClass": "MappingsHandler"
+                },
+                {
+                    "name": "role_accounts",
+                    "title": "Role accounts",
+                    "table": {
+                        "actions": [
+                            "edit",
+                            "delete",
+                            "clone"
+                        ],
+                        "header": [
+                            {
+                                "label": "Name",
+                                "field": "name"
+                            },
+                            {
+                                "label": "Splunk account",
+                                "field": "account"
+                            },
+                            {
+                                "label": "Token expires",
+                                "field": "token_expiry"
+                            }
+                        ],
+                        "moreInfo": [
+                            {
+                                "label": "Splunk account",
+                                "field": "account"
+                            },
+                            {
+                                "label": "Token expires",
+                                "field": "token_expiry"
+                            }
+                        ]
+                    },
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Name",
+                            "field": "name",
+                            "help": "A unique name for this role account. User rules pick it by this name.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Name must begin with a letter and contain only letters, digits and underscores.",
+                                    "pattern": "^[a-zA-Z]\\w*$"
+                                },
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Name must be 1 to 100 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Splunk account",
+                            "field": "account",
+                            "help": "A local Splunk account holding the roles this group of users should have. The token below must belong to it.",
                             "required": true,
                             "validators": [
                                 {
@@ -183,9 +356,114 @@
                                 }
                             ]
                         }
-                    ],
-                    "restHandlerModule": "mtls_bridge_mappings_handler",
-                    "restHandlerClass": "MappingsHandler"
+                    ]
+                },
+                {
+                    "name": "user_rules",
+                    "title": "User rules",
+                    "table": {
+                        "actions": [
+                            "edit",
+                            "delete",
+                            "clone"
+                        ],
+                        "header": [
+                            {
+                                "label": "Name",
+                                "field": "name"
+                            },
+                            {
+                                "label": "Match",
+                                "field": "match"
+                            },
+                            {
+                                "label": "Value",
+                                "field": "value"
+                            },
+                            {
+                                "label": "Role account",
+                                "field": "role_account"
+                            }
+                        ],
+                        "moreInfo": [
+                            {
+                                "label": "Match",
+                                "field": "match"
+                            },
+                            {
+                                "label": "Value",
+                                "field": "value"
+                            },
+                            {
+                                "label": "Role account",
+                                "field": "role_account"
+                            }
+                        ]
+                    },
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Name",
+                            "field": "name",
+                            "help": "A unique name for this rule. Audit events name the rule each proxied call matched.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Name must begin with a letter and contain only letters, digits and underscores.",
+                                    "pattern": "^[a-zA-Z]\\w*$"
+                                },
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Name must be 1 to 100 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ]
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "Match",
+                            "field": "match",
+                            "help": "How the rule matches the user DN that a proxying client names.",
+                            "required": true,
+                            "defaultValue": "dn",
+                            "options": {
+                                "disableSearch": true,
+                                "autoCompleteFields": [
+                                    {
+                                        "value": "dn",
+                                        "label": "Exact DN"
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "label": "Value",
+                            "field": "value",
+                            "help": "The user's distinguished name, for example CN=John Smith,OU=Users,O=Org,C=US. Case and spacing are ignored.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Value must be 1 to 4096 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 4096
+                                }
+                            ]
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "Role account",
+                            "field": "role_account",
+                            "help": "The role account matching users' calls run as.",
+                            "required": true,
+                            "options": {
+                                "referenceName": "role_accounts"
+                            }
+                        }
+                    ]
                 },
                 {
                     "name": "listener",
