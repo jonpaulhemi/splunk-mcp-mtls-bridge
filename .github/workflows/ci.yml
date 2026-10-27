@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_call:
+    inputs:
+      version:
+        description: Version to build the app at; defaults to globalConfig.json's.
+        type: string
+        default: ""
 
 jobs:
   test:
@@ -32,7 +37,9 @@ jobs:
           python-version: "3.9"
       - run: pip install -r requirements-build.txt
       - name: Build the app and run AppInspect
-        run: scripts/build_app.sh "$(python -c 'import json; print(json.load(open("globalConfig.json"))["meta"]["version"])')"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: scripts/build_app.sh "${VERSION:-$(python -c 'import json; print(json.load(open("globalConfig.json"))["meta"]["version"])')}"
       - uses: actions/upload-artifact@v4
         with:
           name: TA-mtls-bridge

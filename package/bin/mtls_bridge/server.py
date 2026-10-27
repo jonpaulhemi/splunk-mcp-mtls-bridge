@@ -67,8 +67,8 @@ def _is_splunk_default_cert(path):
 def _warn_if_default_cert(config):
     if _is_splunk_default_cert(config.server_cert):
         log.warning(
-            "the listener is serving Splunk's default server certificate (%s), which every Splunk install "
-            "shares the CA of; install a cert from your PKI for splunkd, or set the listener cert, key and key "
+            "the listener is serving Splunk's default server certificate (%s), whose CA is shared by every "
+            "Splunk install; install a cert from your PKI for splunkd, or set the listener cert, key and key "
             "password on the Listener settings page",
             config.server_cert,
         )
@@ -459,8 +459,8 @@ class BridgeServer:
         if live is not None and fingerprint == self._tls_fingerprint:
             return fingerprint, live.tls_context, crl_state
         context = listener_context(config)
-        if live is None or config.server_cert != live.config.server_cert:
-            _warn_if_default_cert(config)
+        # On every rebuild, so a default cert swapped in at the same path is caught too.
+        _warn_if_default_cert(config)
         self._crl.load_into(context, crl_state)
         return fingerprint, context, crl_state
 

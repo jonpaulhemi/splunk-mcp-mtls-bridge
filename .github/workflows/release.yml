@@ -7,23 +7,40 @@ on:
     tags: ["v*.*.*"]
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - id: tag
+        # Refuse tags like v1.2.3-rc1 before spending a CI run on them.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tags look like v1.2.3, not $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   ci:
+    needs: version
     uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
 
   release:
-    needs: ci
+    needs: [version, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.9"
-      - run: pip install -r requirements-build.txt
-      - name: Build the app at the tag's version and run AppInspect
-        run: scripts/build_app.sh "${GITHUB_REF_NAME#v}"
+          name: TA-mtls-bridge
+          path: output
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "output/TA-mtls-bridge-${GITHUB_REF_NAME#v}.tgz" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh release create "$GITHUB_REF_NAME" "output/TA-mtls-bridge-$VERSION.tgz" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
