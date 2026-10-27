@@ -1,11 +1,13 @@
 """How the bridge adapts requests and responses to the Splunk MCP Server app."""
 
+import http.client
 import threading
-import time
+
+import pytest
 
 from mtls_bridge.config import Mapping
 
-from harness import MAPPED_TOKEN, Client, make_config, running_bridge
+from harness import MAPPED_TOKEN, client_of, make_config, running_bridge, wait_for
 
 TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
@@ -101,9 +103,7 @@ def test_upstream_401_becomes_502_and_reports_the_mapping(test_pki, upstream):
     upstream.status = 401
     upstream.headers = {"WWW-Authenticate": "Bearer"}
     with running_bridge(make_config(test_pki, upstream), on_token_rejected=rejected.append) as bridge:
-        status, headers, body = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc(
-            "tools/list", request_id=5
-        )
+        status, headers, body = client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list", request_id=5)
 
     assert status == 502
     assert "www-authenticate" not in {k.lower() for k in headers}
@@ -127,22 +127,22 @@ def test_body_at_the_cap_is_forwarded(test_pki, upstream, client_for):
     assert status == 200
 
 
-def test_concurrent_requests_beyond_the_per_identity_cap_get_429(test_pki, upstream):
+def test_eleventh_concurrent_request_from_one_identity_gets_429(test_pki, upstream):
     upstream.gate = threading.Event()
-    with running_bridge(make_config(test_pki, upstream, max_concurrent_per_identity=2)) as bridge:
-        client = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped)
+    with running_bridge(make_config(test_pki, upstream)) as bridge:
+        client = client_of(bridge, test_pki, test_pki.mapped)
         results = []
-        held = [threading.Thread(target=lambda: results.append(client.rpc("tools/list")[0])) for _ in range(2)]
+        held = [threading.Thread(target=lambda: results.append(client.rpc("tools/list")[0])) for _ in range(10)]
         for thread in held:
             thread.start()
-        _wait_for(lambda: len(upstream.received) == 2)
+        wait_for(lambda: len(upstream.received) == 10)
 
         assert client.rpc("tools/list")[0] == 429
 
         upstream.gate.set()
         for thread in held:
             thread.join(10)
-        assert results == [200, 200]
+        assert results == [200] * 10
         assert client.rpc("tools/list")[0] == 200
 
 
@@ -159,13 +159,13 @@ def test_cap_is_per_identity(test_pki, upstream):
     config = make_config(test_pki, upstream, max_concurrent_per_identity=1, mappings=[first, second])
     upstream.gate = threading.Event()
     with running_bridge(config) as bridge:
-        busy = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped)
+        busy = client_of(bridge, test_pki, test_pki.mapped)
         thread = threading.Thread(target=busy.rpc, args=("tools/list",))
         thread.start()
-        _wait_for(lambda: len(upstream.received) == 1)
+        wait_for(lambda: len(upstream.received) == 1)
         upstream.gate.set()  # let agent-b's request through as soon as it arrives
         # The "unmapped" cert carries agent-b's URI, which this config maps.
-        other = Client(bridge.address, test_pki.ca.cert_path, test_pki.unmapped)
+        other = client_of(bridge, test_pki, test_pki.unmapped)
         assert other.rpc("tools/list")[0] == 200
         thread.join(10)
 
@@ -173,7 +173,7 @@ def test_cap_is_per_identity(test_pki, upstream):
 def test_stalled_upstream_gets_504(test_pki, upstream):
     upstream.delay = 2
     with running_bridge(make_config(test_pki, upstream, upstream_timeout=0.3)) as bridge:
-        status, _, body = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc("tools/list")
+        status, _, body = client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list")
     assert status == 504
     assert "timed out" in body["error"]["message"]
 
@@ -181,13 +181,32 @@ def test_stalled_upstream_gets_504(test_pki, upstream):
 def test_upstream_cert_from_an_untrusted_ca_gets_502(test_pki, upstream):
     config = make_config(test_pki, upstream, upstream_ca_bundle=str(test_pki.other_ca.cert_path))
     with running_bridge(config) as bridge:
-        status, _, _ = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc("tools/list")
+        status, _, _ = client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list")
     assert status == 502
     assert upstream.received == []
 
 
-def _wait_for(condition, timeout=5):
-    deadline = time.monotonic() + timeout
-    while not condition():
-        assert time.monotonic() < deadline, "condition not met in time"
-        time.sleep(0.02)
+def test_response_carries_the_request_id_sent_upstream(test_pki, upstream, client_for):
+    _, headers, _ = client_for(test_pki.mapped).rpc("tools/list")
+    assert headers["X-MCP-Request-Id"] == upstream.received[0].headers["X-MCP-Request-Id"]
+
+
+def test_rejections_carry_a_request_id_too(test_pki, upstream, client_for):
+    _, headers, _ = client_for(test_pki.unmapped).rpc("tools/list")
+    assert len(headers["X-MCP-Request-Id"]) >= 16
+
+
+def test_chunked_upstream_response_is_streamed_through(test_pki, upstream, client_for):
+    upstream.chunked = True
+
+    status, headers, body = client_for(test_pki.mapped).rpc("tools/list", request_id=12)
+
+    assert status == 200
+    assert headers["Transfer-Encoding"] == "chunked"
+    assert body == {"jsonrpc": "2.0", "id": 12, "result": {"tools": [{"name": "splunk_run_query"}]}}
+
+
+def test_upstream_failing_mid_response_truncates_rather_than_sending_a_second_response(test_pki, upstream, client_for):
+    upstream.truncate = True
+    with pytest.raises(http.client.IncompleteRead):
+        client_for(test_pki.mapped).rpc("tools/list")

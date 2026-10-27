@@ -4,6 +4,7 @@ import contextlib
 import http.client
 import json
 import ssl
+import time
 from pathlib import Path
 
 from mtls_bridge.config import Config, Mapping
@@ -74,3 +75,15 @@ class Client:
         body = {"jsonrpc": "2.0", "id": request_id, "method": method}
         status, response_headers, data = self.request("POST", body=body, headers=headers)
         return status, response_headers, json.loads(data) if data else None
+
+
+def client_of(bridge, test_pki, issued):
+    """A client for ``bridge`` presenting ``issued`` (None for no cert)."""
+    return Client(bridge.address, test_pki.ca.cert_path, issued)
+
+
+def wait_for(condition, timeout=5):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition not met in time"
+        time.sleep(0.02)

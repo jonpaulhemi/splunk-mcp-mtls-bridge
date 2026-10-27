@@ -27,6 +27,8 @@ class FakeUpstream:
         self.headers = {}
         self.gate = None  # a threading.Event the handler waits on before answering
         self.delay = 0.0
+        self.chunked = False  # send the body with chunked transfer encoding
+        self.truncate = False  # promise more body than is sent, then hang up
         self._lock = threading.Lock()
         upstream = self
 
@@ -49,9 +51,19 @@ class FakeUpstream:
                 self.send_header("Content-Type", "application/json")
                 for name, value in upstream.headers.items():
                     self.send_header(name, value)
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                if upstream.chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    for i in range(0, len(payload), 7):
+                        piece = payload[i : i + 7]
+                        self.wfile.write(b"%x\r\n%s\r\n" % (len(piece), piece))
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    self.send_header("Content-Length", str(len(payload) + (100 if upstream.truncate else 0)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    if upstream.truncate:
+                        self.close_connection = True
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(issued.cert), str(issued.key))

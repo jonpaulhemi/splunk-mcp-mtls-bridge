@@ -1,17 +1,15 @@
 """The mTLS listener that forwards MCP requests upstream with a mapped bearer token."""
 
 import contextlib
-import http.client
 import json
 import logging
-import socket
 import ssl
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import identity, resolver
-from .upstream import Upstream, returned_headers
+from .upstream import Forwarded, Upstream, UpstreamTimeout, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +57,7 @@ class _ConcurrencyLimiter:
     @contextlib.contextmanager
     def slot(self, mapping):
         """Yield True while holding a slot for ``mapping``, or False if it has none free."""
-        key = (mapping.issuer.lower(), mapping.identity_type.upper(), mapping.identity_value)
+        key = mapping.key
         with self._lock:
             acquired = self._in_flight.get(key, 0) < self._limit
             if acquired:
@@ -90,96 +88,114 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         bridge = self.server.bridge
+        # One id per request: returned to the client and sent upstream, so both sides' logs can be joined.
+        self.bridge_request_id = uuid.uuid4().hex
         body = self._read_body(bridge.config.max_body_bytes)
         if body is None:
             return
         message = _parse(body)
-        request_id = message.get("id") if message else None
+        rpc_id = message.get("id") if message else None
         peer = identity.from_peercert(self.connection.getpeercert())
         try:
             mapping = resolver.resolve(bridge.config.mappings, peer)
         except resolver.Rejection as rejection:
-            self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {rejection.reason}", request_id)
+            self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {rejection.reason}", rpc_id)
             return
         if message and message.get("method") == "ping":
             # Answered here so health checks don't spend the upstream's shared rate limit.
-            self._send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": {}})
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
             return
         with bridge.limiter.slot(mapping) as acquired:
             if not acquired:
-                self._send_rpc_error(429, _ERR_BUSY, "too many concurrent requests for this client", request_id)
+                self._send_rpc_error(429, _ERR_BUSY, "too many concurrent requests for this client", rpc_id)
                 return
-            self._forward(bridge, mapping, body, request_id)
+            self._forward(bridge, mapping, body, rpc_id)
 
-    def _forward(self, bridge, mapping, body, request_id):
+    def _forward(self, bridge, mapping, body, rpc_id):
+        forwarded = Forwarded(self.client_address[0], self.bridge_request_id, self.headers)
+        self._headers_sent = False
         try:
-            with bridge.upstream.post(
-                mapping.token, body, self.headers, self.client_address[0], uuid.uuid4().hex
-            ) as response:
+            with bridge.upstream.post(mapping.token, body, forwarded) as response:
                 if response.status == 401:
-                    response.read()
                     bridge.token_rejected(mapping)
-                    self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", request_id)
+                    self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", rpc_id)
                     return
                 self._relay(response)
-        except socket.timeout:
-            self._send_rpc_error(504, _ERR_UPSTREAM, "upstream MCP server timed out", request_id)
-        except (OSError, http.client.HTTPException) as exc:
+        except UpstreamTimeout:
+            self._fail(504, "upstream MCP server timed out", rpc_id)
+        except UpstreamUnavailable as exc:
             log.warning("upstream request failed: %s", exc)
-            self._send_rpc_error(502, _ERR_UPSTREAM, "upstream MCP server unavailable", request_id)
+            self._fail(502, "upstream MCP server unavailable", rpc_id)
+        except OSError as exc:
+            # The client went away or stalled mid-response.
+            log.debug("client connection failed: %s", exc)
+            self.close_connection = True
+
+    def _fail(self, status, message, rpc_id):
+        if self._headers_sent:
+            # Too late for an error response: cut the connection so the client sees a truncated body.
+            self.close_connection = True
+        else:
+            self._send_rpc_error(status, _ERR_UPSTREAM, message, rpc_id)
 
     def _relay(self, response):
-        length = response.getheader("Content-Length")
-        if length is None or not length.isdigit():
-            self._send(response.status, returned_headers(response), response.read())
-            return
-        self.send_response(response.status)
-        for name, value in returned_headers(response):
-            self.send_header(name, value)
-        self.send_header("Content-Length", length)
-        self.end_headers()
+        if response.length is not None:
+            self._send_headers(response.status, response.headers + [("Content-Length", str(response.length))])
+            write = self.wfile.write
+        else:
+            self._send_headers(response.status, response.headers + [("Transfer-Encoding", "chunked")])
+            write = self._write_chunk
         while True:
-            chunk = response.read(_COPY_CHUNK)
+            chunk = response.read_chunk(_COPY_CHUNK)
             if not chunk:
                 break
-            self.wfile.write(chunk)
+            write(chunk)
+        if response.length is None:
+            self.wfile.write(b"0\r\n\r\n")
+
+    def _write_chunk(self, chunk):
+        self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
 
     def _read_body(self, limit):
         """Read the request body, or answer with an error and return None."""
         length = self.headers.get("Content-Length")
         error = None
         if length is None:
-            error = (411, "Content-Length required")
+            error = (411, _ERR_INVALID_REQUEST, "Content-Length required")
         elif not length.isdigit():
-            error = (400, "invalid Content-Length")
+            error = (400, _ERR_INVALID_REQUEST, "invalid Content-Length")
         elif int(length) > limit:
-            error = (413, f"request body exceeds {limit} bytes")
+            error = (413, _ERR_TOO_LARGE, f"request body exceeds {limit} bytes")
         if error:
             # The unread body would corrupt the next request on this connection.
             self.close_connection = True
-            status, message = error
-            self._send_rpc_error(status, _ERR_TOO_LARGE if status == 413 else _ERR_INVALID_REQUEST, message)
+            self._send_rpc_error(*error)
             return None
         return self.rfile.read(int(length))
 
     def _method_not_allowed(self):
+        self.bridge_request_id = uuid.uuid4().hex
         self.close_connection = True
-        payload = b'{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"only POST is supported"}}'
-        self._send(405, [("Content-Type", "application/json"), ("Allow", "POST")], payload)
+        self._send_rpc_error(405, _ERR_INVALID_REQUEST, "only POST is supported", headers=[("Allow", "POST")])
 
-    def _send_rpc_error(self, status, code, message, request_id=None):
-        self._send_json(status, {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
+    def _send_rpc_error(self, status, code, message, rpc_id=None, headers=()):
+        document = {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
+        self._send_json(status, document, headers)
 
-    def _send_json(self, status, document):
-        self._send(status, [("Content-Type", "application/json")], json.dumps(document).encode())
+    def _send_json(self, status, document, headers=()):
+        payload = json.dumps(document).encode()
+        self._send_headers(
+            status, [("Content-Type", "application/json"), *headers, ("Content-Length", str(len(payload)))]
+        )
+        self.wfile.write(payload)
 
-    def _send(self, status, headers, payload):
+    def _send_headers(self, status, headers):
         self.send_response(status)
         for name, value in headers:
             self.send_header(name, value)
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("X-MCP-Request-Id", self.bridge_request_id)
         self.end_headers()
-        self.wfile.write(payload)
+        self._headers_sent = True
 
 
 class _Listener(ThreadingHTTPServer):
