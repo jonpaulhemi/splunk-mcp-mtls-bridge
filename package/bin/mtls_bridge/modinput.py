@@ -83,7 +83,8 @@ def _run(inputs, splunk_home, parent, stopping):
         return 0
     try:
         bridge = BridgeServer(config).start()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError: a CRL file that can't be used, with no earlier copy to fall back on.
         log.error("cannot start listener on %s:%s: %s", config.listen_host, config.listen_port, exc)
         return 1
     log.info("bridge listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))

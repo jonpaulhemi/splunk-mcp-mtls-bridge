@@ -33,7 +33,7 @@ The bridge starts within a minute of the Listener tab getting a client CA bundle
 | --- | --- |
 | Bind address, Port | Where clients connect (default `0.0.0.0:8443`). Open the port in the host firewall. |
 | Client CA bundle | A PEM file with every CA that issues client certificates. Only certs that chain to one of these are accepted. |
-| Listener certificate, key, key password | The cert clients see. Leave these empty to reuse splunkd's server cert (`[sslConfig] serverCert`). |
+| Listener certificate, key, key password | The cert clients see. Leave the certificate empty to reuse splunkd's server cert (`[sslConfig] serverCert`). Leave the key empty if the certificate file also holds the key. With no password set, the bridge also tries Splunk's default key password. |
 | Client CRL file, CRL check depth, When the CRL expires | Revocation checking. See [CRL](#crl) below. |
 | MCP Server URL, CA bundle, hostname check | Where the MCP Server app listens. The defaults suit an MCP Server app on the same search head. |
 
@@ -50,17 +50,18 @@ Each row maps one client certificate to one Splunk account.
 
 | Field | What to enter |
 | --- | --- |
+| Name | A unique name for the row: a letter, then letters, digits or underscores. |
 | Issuer DN | The DN of the CA that issued the client cert, in RFC 4514 form, for example `CN=Example MCP Client CA,O=Example Corp`. It is matched case-insensitively. |
-| Identity type, Identity | Which certificate field identifies the client (`URI`, `DNS`, `EMAIL`, `UPN`, `IP` or `CN`) and its value. The row matches if any field of that type holds the value. DNS, email and UPN ignore case; URI and CN are exact. |
+| Identity type, Identity | Which certificate field identifies the client (`URI`, `DNS`, `EMAIL`, `UPN`, `IP` or `CN`) and its value. The row matches if any field of that type holds the value. DNS, email and UPN ignore case; URI and CN are exact; IP addresses match in any notation. |
 | Splunk account | The local account this client acts as. |
 | MCP token | That account's encrypted MCP token from the MCP Server app. It is stored encrypted in Splunk's credential store. |
 | Token expiry date | The token's expiry date, as `YYYY-MM-DD`. |
 
-A cert that matches no row, or more than one row, is refused with HTTP 403. Deleting a row revokes that client at the next poll.
+A cert that matches no row, or more than one row, is refused with HTTP 403. Deleting a row revokes that client at the next poll. A row whose token can't be read is skipped with an error in the operational log, so its client also gets 403.
 
 **Finding the issuer and identity values.** Either of these gives you values in the exact form the Mappings tab expects:
 
-- Run the bundled script on the client's cert with any Python 3.9 or later:
+- Run the bundled script on the client's cert, with Splunk's Python (`$SPLUNK_HOME/bin/splunk cmd python3`) or any Python 3.9 or later:
 
   ```
   $ python3 $SPLUNK_HOME/etc/apps/TA-mtls-bridge/bin/inspect-cert client.pem
@@ -103,10 +104,10 @@ Every call, every rejection and every burst of failed handshakes is written as o
 CRL checking is optional. When it's off, deleting a mapping is how you revoke a client.
 
 - **Client CRL file:** a CRL file (PEM or DER) that your PKI tooling keeps up to date. It must hold a current CRL from **every CA that issues client certs**, because OpenSSL refuses a cert whose issuer has no CRL. In chain mode it also needs one from every CA in their chains.
-- **CRL check depth:** `leaf` (the default) checks only the client cert. `chain` checks every cert in its chain.
-- **When the CRL expires:** `fail_closed` (the default) refuses every handshake until a fresh CRL arrives. `fail_open` stops checking revocation and adds a warning to every audit event.
+- **CRL check depth:** "Client certificate only (leaf)", the default, checks only the client cert. "Whole chain" checks every cert in its chain.
+- **When the CRL expires:** "Reject all clients (fail closed)", the default, refuses every handshake until a fresh CRL arrives. "Stop checking revocation and warn (fail open)" stops checking revocation and adds a warning to every call and rejection audit event.
 
-The bridge re-reads the file every 30 seconds. It refuses a replacement that won't parse or has already expired, and keeps enforcing the previous one. It warns 24 hours before `nextUpdate`.
+The bridge re-reads the file every 30 seconds. It refuses a replacement that won't parse, that OpenSSL won't load, or that isn't valid yet or has already expired, and keeps enforcing the previous one. At startup there's no previous one, so a file it can't use stops the bridge from starting, with the reason in its operational log. An expired CRL at startup is accepted and the expiry setting applies. The bridge warns 24 hours before `nextUpdate`.
 
 ## Client certificate profile
 
@@ -144,7 +145,7 @@ authorityKeyIdentifier = keyid
 openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout ca.key -out ca.pem -days 1825 -config pki.cnf -extensions ca
 openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -keyout client.key -out client.csr -subj "/O=Example Corp/CN=report-bot"
+  -keyout client.key -out client.csr -config pki.cnf -subj "/O=Example Corp/CN=report-bot"
 openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out client.pem -days 365 -extfile pki.cnf -extensions client
 ```
@@ -244,7 +245,7 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
   "mcpServers": {
     "splunk": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:8080/services/mcp", "--allow-http", "--transport", "http-only"]
+      "args": ["mcp-remote@0.15.2", "http://localhost:8080/services/mcp", "--allow-http", "--transport", "http-only"]
     }
   }
 }
@@ -255,9 +256,15 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
 ## Limits and caveats
 
 - **Custom connectors in claude.ai, Claude Desktop and Cowork can't connect.** They can't present a client certificate.
-- **Rate limit:** the MCP Server app allows 240 requests a minute per Splunk account. Every cert mapped to the same account shares that budget.
+- **Rate limit:** the MCP Server app (v2.1.0) allows 240 requests a minute per Splunk account by default. Every cert mapped to the same account shares that budget.
 - **Request size and concurrency:** request bodies are capped at 128 KiB (HTTP 413 above that), with 10 concurrent requests per mapped identity (HTTP 429 above that).
-- **Answered by the bridge:** `ping` is answered locally. A GET on `/health` from a mapped cert returns the bridge's status and version, its CRL state, and each mapping's account, expiry date and token status. It never includes tokens. Other GETs, and DELETE, get HTTP 405.
+- **Answered by the bridge:** `ping` is answered locally. A GET on `/health` from a mapped cert returns JSON with:
+  - `status`: `ok`; `warning` when a token is within 14 days of its expiry date or past it; or `degraded` when a token is invalid or the CRL has expired;
+  - `version`, and `crl` (`present`, `next_update`, `expired`);
+  - per mapping: `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
+
+  It never includes tokens. Unmapped certs get 403. Other GETs, and DELETE, get HTTP 405.
+- **Other errors clients may see:** 411 for a POST without `Content-Length` (chunked request bodies aren't accepted), 502 when the MCP Server is unreachable or rejects the bridge's token, and 504 when it times out (after 300 seconds).
 - **Out of scope:** search head clusters, Splunk Cloud and OCSP.
 
 ## Development

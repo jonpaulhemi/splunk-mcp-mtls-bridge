@@ -359,3 +359,14 @@ def test_daemon_checks_new_tokens_at_startup_and_after_each_poll(
     finally:
         process.terminate()
         process.wait(10)
+
+
+def test_unusable_crl_at_startup_exits_with_an_error_in_the_log(test_pki, splunkd, splunk_home, bridge_port, tmp_path):
+    splunkd.content_overrides["settings_listener.json"]["crl_file"] = str(test_pki.crls["malformed"])
+
+    process = _start(splunkd, splunk_home, tmp_path)
+
+    assert process.wait(10) != 0
+    log = _log(splunk_home)
+    assert "cannot start" in log and "CRL" in log
+    assert b"Traceback" not in process.stderr.read()
