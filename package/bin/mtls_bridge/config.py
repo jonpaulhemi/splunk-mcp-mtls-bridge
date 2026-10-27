@@ -16,6 +16,11 @@ class Mapping:
     account: str
     token: str = field(repr=False)
 
+    @property
+    def key(self):
+        """The identity this mapping matches, normalised: (issuer, identity type, identity value)."""
+        return (self.issuer.lower(), self.identity_type.upper(), self.identity_value)
+
 
 @dataclass(frozen=True)
 class Config:
@@ -31,5 +36,10 @@ class Config:
     handshake_timeout: float = 10.0
     # How long to wait on a quiet client between and during requests, after the handshake.
     client_timeout: float = 30.0
+    upstream_connect_timeout: float = 10.0
+    # Longest wait for the upstream to send anything, once connected.
     upstream_timeout: float = 300.0
+    # Matches the MCP Server app's own payload cap.
+    max_body_bytes: int = 128 * 1024
+    max_concurrent_per_identity: int = 10
     mappings: List[Mapping] = field(default_factory=list)

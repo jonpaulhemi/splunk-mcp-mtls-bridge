@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from harness import MAPPED_TOKEN, Client, make_config, running_bridge
+from harness import MAPPED_TOKEN, client_of, make_config, running_bridge
 
 
 def test_mapped_client_can_list_tools_through_the_bridge(test_pki, upstream, client_for):
@@ -63,7 +63,7 @@ def test_valid_but_unmapped_cert_gets_403_json_rpc_error(test_pki, upstream, cli
 
 
 def _client_context(test_pki, bridge, **settings):
-    context = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).context
+    context = client_of(bridge, test_pki, test_pki.mapped).context
     for name, value in settings.items():
         if name == "ciphers":
             context.set_ciphers(value)
@@ -110,7 +110,7 @@ def test_listener_refuses_legacy_tls_1_2_ciphers(test_pki, bridge, cipher):
 def test_unreachable_upstream_gets_502_json_rpc_error(test_pki, upstream, unused_port):
     config = make_config(test_pki, upstream, upstream_url=f"https://127.0.0.1:{unused_port}/services/mcp")
     with running_bridge(config) as bridge:
-        status, _, body = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc("tools/list", request_id=4)
+        status, _, body = client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list", request_id=4)
 
     assert status == 502
     assert body["id"] == 4
@@ -133,7 +133,7 @@ def test_chunked_body_without_content_length_gets_411(client_for, test_pki, upst
 
 def test_idle_client_after_handshake_is_disconnected(test_pki, upstream):
     with running_bridge(make_config(test_pki, upstream, client_timeout=0.5)) as bridge:
-        context = Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).context
+        context = client_of(bridge, test_pki, test_pki.mapped).context
         with socket.create_connection(bridge.address, timeout=5) as raw:
             with context.wrap_socket(raw, server_hostname="localhost") as tls:
                 started = time.monotonic()
