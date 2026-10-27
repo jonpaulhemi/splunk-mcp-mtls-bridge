@@ -230,3 +230,85 @@ def test_changed_role_accounts_apply_without_a_restart(test_pki, upstream):
 
     assert [r.headers["Authorization"] for r in upstream.received] == ["Bearer " + ANALYST_TOKEN, "Bearer renewed"]
     assert status == 403
+
+
+def _attribute_config(test_pki, upstream, audit_path, rules):
+    return _proxy_config(test_pki, upstream, audit_log=str(audit_path), user_rules=rules)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        JOHN,
+        "CN=Jane Doe,OU=Users,O=Org,C=US",
+        "cn=someone, ou=USERS, o=org",
+        "CN=Multi,OU=Users+OU=Staff,O=Org",
+        "O=Org,OU=Users,CN=Reversed",
+    ],
+)
+def test_attribute_rule_matches_every_dn_holding_its_attributes(test_pki, upstream, audit_path, header):
+    rules = [UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts")]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: header})
+
+    assert status == 200
+    assert upstream.received[0].headers["Authorization"] == "Bearer " + ANALYST_TOKEN
+    event = _events(audit_path)[0]
+    assert (event["user_rule"], event["role_account"]) == ("org_users", "analysts")
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["CN=Eve,OU=Contractors,O=Org", "CN=Eve,OU=Users,O=Other", "CN=Eve,OU=Users", "CN=Users,O=Org"],
+)
+def test_attribute_rule_needs_all_its_attributes(test_pki, upstream, audit_path, header):
+    rules = [UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts")]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: header})
+
+    assert status == 403
+    assert _events(audit_path)[0]["reason"] == "user_unmatched"
+
+
+def test_repeated_attribute_must_each_be_present(test_pki, upstream, audit_path):
+    rules = [UserRule("staff_users", "attributes", "OU=Users,OU=Staff", "analysts")]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        client = _proxy_client(bridge, test_pki)
+        only_one, _, _ = client.rpc("tools/list", headers={HEADER: "CN=A,OU=Users,O=Org"})
+        both, _, _ = client.rpc("tools/list", headers={HEADER: "CN=B,OU=Staff,OU=Users,O=Org"})
+
+    assert (only_one, both) == (403, 200)
+
+
+def test_exact_dn_rule_wins_over_attribute_rules(test_pki, upstream, audit_path):
+    rules = [
+        UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts"),
+        UserRule("all_org", "attributes", "O=Org", "analysts"),
+        UserRule("john", "dn", JOHN, "engineers"),
+    ]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
+
+    assert status == 200
+    assert upstream.received[0].headers["Authorization"] == "Bearer " + ENGINEER_TOKEN
+    assert _events(audit_path)[0]["user_rule"] == "john"
+
+
+def test_two_matching_attribute_rules_are_ambiguous(test_pki, upstream, audit_path):
+    rules = [
+        UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts"),
+        UserRule("all_org", "attributes", "O=Org", "engineers"),
+    ]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, body = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
+
+    assert status == 403
+    assert "rule" in body["error"]["message"]
+    assert upstream.received == []
+    event = _events(audit_path)[0]
+    assert (event["reason"], event["user_dn"]) == ("user_ambiguous", JOHN)
+
+
+def test_attribute_rule_that_is_not_a_dn_cannot_be_built():
+    with pytest.raises(ValueError):
+        UserRule("bad", "attributes", "Users", "analysts")

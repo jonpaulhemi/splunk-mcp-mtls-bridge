@@ -43,11 +43,14 @@ Settled in the grilling for #41, which is the spec.
 
 - **Proxying clients:** a mapping can be flagged as one that proxies users. Such a mapping has no account or token. Each call names its user in `X-ProxiedEntitiesChain`, as one DN, either bare or in a single `<...>`.
 - **Role accounts:** these are local Splunk accounts holding the roles a group of users should have, each with its own token and expiry date. They live on their own page.
-- **User rules:** a rule maps a user DN to a role account. Rules are global and apply to every flagged client. DNs are compared in the same canonical RFC 4514 form as issuers. The call is forwarded with the matched role account's token, so Splunk applies that account's roles.
+- **User rules:** a rule maps users to a role account. Rules are global and apply to every flagged client. DNs are compared in the same canonical RFC 4514 form as issuers. The call is forwarded with the matched role account's token, so Splunk applies that account's roles.
+  - An **exact DN** rule matches one DN.
+  - An **attributes** rule, such as `OU=Analysts,O=Org`, matches every DN that holds all of its attribute=value pairs, in any RDN and in any order. A repeated attribute must be present as many times.
+  - An exact match wins. Otherwise exactly one attribute rule may match; two give 403 as ambiguous.
 - **Refusals (403, audited):**
   - a flagged client sends no user header;
   - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
-  - no rule matches;
+  - no rule matches, or two attribute rules do;
   - an unflagged client sends the header, `ping` included.
 - **Without a user:** a flagged client's `ping` and `/health` work without the header.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.

@@ -54,7 +54,7 @@ class UserRule:
     """Sends proxied users whose DN matches ``value`` to the role account named ``role_account``."""
 
     name: str
-    match: str  # users.EXACT_DN
+    match: str  # users.EXACT_DN or users.ATTRIBUTES
     value: str
     role_account: str
 
