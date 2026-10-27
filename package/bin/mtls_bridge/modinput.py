@@ -42,6 +42,9 @@ def main(argv, stdin):
     if argv[:1] == ["--validate-arguments"]:
         return 0
 
+    stopping = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stopping.set())
+    signal.signal(signal.SIGINT, lambda *_: stopping.set())
     splunk_home = os.environ.get("SPLUNK_HOME", "")
     _configure_logging(splunk_home)
     inputs = _parse_input(stdin.read())
@@ -51,12 +54,12 @@ def main(argv, stdin):
         log.info("another bridge instance is already running; exiting")
         return 0
     try:
-        return _run(inputs, splunk_home, parent)
+        return _run(inputs, splunk_home, parent, stopping)
     finally:
         lock.close()
 
 
-def _run(inputs, splunk_home, parent):
+def _run(inputs, splunk_home, parent, stopping):
     try:
         config = splunk_config.load(inputs["server_uri"], inputs["session_key"], splunk_home)
     except splunk_config.NotConfigured as exc:
@@ -69,10 +72,8 @@ def _run(inputs, splunk_home, parent):
         log.error("bridge configuration error: %s", exc)
         return 1
 
-    stopping = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stopping.set())
-    signal.signal(signal.SIGINT, lambda *_: stopping.set())
-
+    if stopping.is_set():
+        return 0
     try:
         bridge = BridgeServer(config).start()
     except OSError as exc:

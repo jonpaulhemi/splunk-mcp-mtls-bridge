@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .config import DEFAULT_UPSTREAM_URL, Config, Mapping
+from .config import Config, Mapping
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ _SERVER_SSL_CONFIG = "/services/configs/conf-server/sslConfig"
 # password we can try for its key; anything else needs the listener key password override.
 _SPLUNK_DEFAULT_KEY_PASSWORD = "password"
 
-_TRUE = {"1", "true", "yes", "t", "y"}
+# How splunkd and UCC spell a checked checkbox.
+_TRUTHY = {"1", "true", "yes", "t", "y"}
 
 
 class ConfigError(Exception):
@@ -60,18 +61,22 @@ def load(server_uri, session_key, splunk_home):
     server_key = server_key or server_cert
     password = _working_key_password(server_cert, server_key, password)
 
-    return Config(
-        listen_host=settings.get("listen_host") or "0.0.0.0",
-        listen_port=_int(settings, "listen_port", 8443),
+    values = dict(
         server_cert=server_cert,
         server_key=server_key,
         server_key_password=password,
         ca_bundle=ca_bundle,
-        upstream_url=settings.get("upstream_url") or DEFAULT_UPSTREAM_URL,
-        upstream_ca_bundle=path(settings.get("upstream_ca_bundle")) or f"{splunk_home}/etc/auth/cacert.pem",
-        upstream_verify_hostname=str(settings.get("upstream_verify_hostname", "0")).lower() in _TRUE,
+        upstream_ca_bundle=path(settings.get("upstream_ca_bundle") or "$SPLUNK_HOME/etc/auth/cacert.pem"),
+        upstream_verify_hostname=str(settings.get("upstream_verify_hostname", "0")).lower() in _TRUTHY,
         mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
     )
+    # Settings left empty keep Config's defaults.
+    for name in ("listen_host", "upstream_url"):
+        if settings.get(name):
+            values[name] = settings[name]
+    if settings.get("listen_port"):
+        values["listen_port"] = _int(settings, "listen_port")
+    return Config(**values)
 
 
 def _splunkd_server_cert(rest, path):
@@ -121,10 +126,10 @@ def _mapping(entry):
     )
 
 
-def _int(settings, name, default):
-    value = settings.get(name)
+def _int(settings, name):
+    value = settings[name]
     try:
-        return int(value) if value not in (None, "") else default
+        return int(value)
     except ValueError as exc:
         raise ConfigError(f"{name} must be a number, not {value!r}") from exc
 

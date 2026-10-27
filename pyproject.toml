@@ -12,4 +12,4 @@ ignore = ["UP006", "UP007", "UP035", "UP045"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mtls_bridge"]
-known-local-folder = ["harness", "pki", "fake_upstream"]
+known-local-folder = ["harness", "pki", "fake_upstream", "fake_splunkd"]

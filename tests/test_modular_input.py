@@ -3,32 +3,24 @@
 import os
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 
 import pytest
-from fake_splunkd import FakeSplunkd
+from cryptography import x509
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from harness import ROOT, Client, wait_for
+import pki
+from harness import ROOT, SESSION_KEY, Client, wait_for
 
 SCRIPT = ROOT / "package" / "bin" / "mtls_bridge_daemon.py"
-SESSION_KEY = "modinput-session-key"
 
 
 @pytest.fixture
-def splunk_home(tmp_path):
-    home = tmp_path / "splunk"
-    (home / "etc" / "auth").mkdir(parents=True)
-    (home / "var" / "log" / "splunk").mkdir(parents=True)
-    return home
-
-
-@pytest.fixture
-def splunkd(test_pki, upstream, splunk_home, unused_port):
-    fake = FakeSplunkd(
-        test_pki.server, SESSION_KEY, {"{PKI}": str(test_pki.ca.cert_path.parent), "{SPLUNK_HOME}": str(splunk_home)}
-    )
-    fake.content_overrides["settings_listener.json"] = {
+def bridge_port(test_pki, upstream, splunkd, unused_port):
+    """Point the fake splunkd's settings at the test PKI and fake upstream; return the bridge's port."""
+    splunkd.content_overrides["settings_listener.json"] = {
         "listen_host": "127.0.0.1",
         "listen_port": str(unused_port),
         "server_cert": str(test_pki.server.cert),
@@ -36,9 +28,7 @@ def splunkd(test_pki, upstream, splunk_home, unused_port):
         "upstream_url": upstream.url,
         "upstream_ca_bundle": str(test_pki.ca.cert_path),
     }
-    fake.port = unused_port
-    yield fake.start()
-    fake.stop()
+    return unused_port
 
 
 def _input_xml(splunkd, checkpoint_dir, session_key=SESSION_KEY):
@@ -79,18 +69,18 @@ def _serving(test_pki, port):
 
 
 @pytest.fixture
-def daemon(splunkd, splunk_home, tmp_path):
+def daemon(splunkd, splunk_home, tmp_path, bridge_port):
     process = _start(splunkd, splunk_home, tmp_path)
-    wait_for(lambda: process.poll() is not None or _serving_quietly(splunkd), timeout=10)
+    wait_for(lambda: process.poll() is not None or _port_open(bridge_port), timeout=10)
     yield process
     if process.poll() is None:
         process.terminate()
         process.wait(10)
 
 
-def _serving_quietly(splunkd):
+def _port_open(port):
     with socket.socket() as sock:
-        return sock.connect_ex(("127.0.0.1", splunkd.port)) == 0
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _log(splunk_home):
@@ -111,29 +101,29 @@ def test_validate_arguments_accepts_the_stanza(splunkd, tmp_path):
     assert result.returncode == 0
 
 
-def test_daemon_serves_mapped_clients_from_splunk_config(test_pki, upstream, splunkd, daemon):
+def test_daemon_serves_mapped_clients_from_splunk_config(test_pki, upstream, bridge_port, daemon):
     assert daemon.poll() is None
-    assert _serving(test_pki, splunkd.port)
+    assert _serving(test_pki, bridge_port)
     assert upstream.received[0].headers["Authorization"].endswith(".agent-a")
 
 
-def test_second_instance_exits_without_a_second_listener(test_pki, splunkd, splunk_home, daemon, tmp_path):
+def test_second_instance_exits_without_a_second_listener(test_pki, splunkd, splunk_home, bridge_port, daemon, tmp_path):
     second = _start(splunkd, splunk_home, tmp_path)
 
     assert second.wait(10) == 0
     assert daemon.poll() is None
-    assert _serving(test_pki, splunkd.port)
+    assert _serving(test_pki, bridge_port)
     assert "already running" in _log(splunk_home)
 
 
-def test_sigterm_stops_the_listener(splunkd, daemon):
+def test_sigterm_stops_the_listener(bridge_port, daemon):
     daemon.send_signal(signal.SIGTERM)
 
     assert daemon.wait(10) == 0
-    assert not _serving_quietly(splunkd)
+    assert not _port_open(bridge_port)
 
 
-def test_daemon_exits_when_splunkd_goes_away(splunkd, splunk_home, tmp_path):
+def test_daemon_exits_when_splunkd_goes_away(splunkd, splunk_home, bridge_port, tmp_path):
     # A parent process stands in for splunkd: it starts the daemon, reports its pid and exits.
     parent = subprocess.run(
         [
@@ -156,7 +146,7 @@ def test_daemon_exits_when_splunkd_goes_away(splunkd, splunk_home, tmp_path):
     assert "parent process exited" in _log(splunk_home)
 
 
-def test_unconfigured_bridge_exits_cleanly_and_says_why(splunkd, splunk_home, tmp_path):
+def test_unconfigured_bridge_exits_cleanly_and_says_why(splunkd, splunk_home, bridge_port, tmp_path):
     splunkd.content_overrides["settings_listener.json"]["ca_bundle"] = None
 
     process = _start(splunkd, splunk_home, tmp_path)
@@ -165,7 +155,7 @@ def test_unconfigured_bridge_exits_cleanly_and_says_why(splunkd, splunk_home, tm
     assert "not configured" in _log(splunk_home)
 
 
-def test_rejected_session_key_exits_with_an_error(splunkd, splunk_home, tmp_path):
+def test_rejected_session_key_exits_with_an_error(splunkd, splunk_home, bridge_port, tmp_path):
     process = _start(splunkd, splunk_home, tmp_path, session_key="stale")
 
     assert process.wait(10) != 0
@@ -178,3 +168,42 @@ def _alive(pid):
             return "\nState:\tZ" not in status.read()
     except FileNotFoundError:
         return False
+
+
+def _served_cert(test_pki, port):
+    context = Client(("127.0.0.1", port), test_pki.ca.cert_path, test_pki.mapped).context
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with context.wrap_socket(raw, server_hostname="localhost") as tls:
+            return tls.getpeercert(binary_form=True)
+
+
+def _der(path):
+    return ssl.PEM_cert_to_DER_cert(path.read_text())
+
+
+def test_listener_defaults_to_splunkds_server_cert(test_pki, splunkd, splunk_home, bridge_port, tmp_path):
+    splunkd_cert = pki.issue(
+        test_pki.ca,
+        tmp_path,
+        "splunkd_server",
+        "SplunkServerDefaultCert",
+        sans=[x509.DNSName("localhost")],
+        eku=ExtendedKeyUsageOID.SERVER_AUTH,
+        rsa_key=True,
+    )
+    # Splunk's server.pem holds the cert followed by its key.
+    server_pem = splunk_home / "etc" / "auth" / "server.pem"
+    server_pem.write_bytes(splunkd_cert.cert.read_bytes() + splunkd_cert.key.read_bytes())
+    splunkd.content_overrides["settings_listener.json"].update(server_cert=None, server_key=None)
+
+    process = _start(splunkd, splunk_home, tmp_path)
+    try:
+        wait_for(lambda: process.poll() is not None or _port_open(bridge_port), timeout=10)
+        assert _served_cert(test_pki, bridge_port) == _der(splunkd_cert.cert)
+    finally:
+        process.terminate()
+        process.wait(10)
+
+
+def test_listener_serves_the_override_cert(test_pki, bridge_port, daemon):
+    assert _served_cert(test_pki, bridge_port) == _der(test_pki.server.cert)

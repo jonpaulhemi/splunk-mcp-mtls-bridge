@@ -14,6 +14,8 @@ import pki
 
 ROOT = Path(__file__).resolve().parent.parent
 MAPPED_TOKEN = "mapped-account-token"
+# The session key the fake splunkd accepts.
+SESSION_KEY = "session-key-from-splunkd"
 
 
 def make_config(test_pki, upstream, **overrides):

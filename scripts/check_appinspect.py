@@ -15,7 +15,8 @@ def main(path):
         for check in group["checks"]:
             if check["result"] not in SHOWN:
                 continue
-            blocking += check["result"] in BLOCKING
+            if check["result"] in BLOCKING:
+                blocking += 1
             print(f"{check['result'].upper()}: {check['name']}")
             for message in check.get("messages", [])[:5]:
                 print(f"    {message.get('message', '')[:300]}")

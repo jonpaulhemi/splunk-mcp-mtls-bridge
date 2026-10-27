@@ -9,8 +9,9 @@ sys.path.insert(0, str(TESTS.parent / "package" / "bin"))
 sys.path.insert(0, str(TESTS))
 
 import pki  # noqa: E402
+from fake_splunkd import FakeSplunkd  # noqa: E402
 from fake_upstream import FakeUpstream  # noqa: E402
-from harness import Client, make_config, running_bridge  # noqa: E402
+from harness import SESSION_KEY, Client, make_config, running_bridge  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -45,3 +46,19 @@ def unused_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+@pytest.fixture
+def splunk_home(tmp_path):
+    """An empty $SPLUNK_HOME with the directories the bridge reads and writes."""
+    home = tmp_path / "splunk"
+    (home / "etc" / "auth").mkdir(parents=True)
+    (home / "var" / "log" / "splunk").mkdir(parents=True)
+    return home
+
+
+@pytest.fixture
+def splunkd(test_pki):
+    fake = FakeSplunkd(test_pki.server, SESSION_KEY, {"{PKI}": str(test_pki.ca.cert_path.parent)}).start()
+    yield fake
+    fake.stop()

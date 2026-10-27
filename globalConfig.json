@@ -177,7 +177,8 @@
                             "required": true,
                             "validators": [
                                 {
-                                    "type": "date",
+                                    "type": "regex",
+                                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
                                     "errorMsg": "Enter the expiry date as YYYY-MM-DD."
                                 }
                             ]
@@ -268,9 +269,6 @@
                             "help": "Check that splunkd's certificate names the MCP Server URL's host. Splunk's default certificate doesn't name 127.0.0.1."
                         }
                     ]
-                },
-                {
-                    "type": "loggingTab"
                 }
             ]
         }

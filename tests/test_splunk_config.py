@@ -4,25 +4,10 @@ import datetime
 
 import pytest
 from cryptography.hazmat.primitives import serialization
-from fake_splunkd import FakeSplunkd
 
 from mtls_bridge import splunk_config
 
-SESSION_KEY = "session-key-from-splunkd"
-
-
-@pytest.fixture
-def splunk_home(tmp_path):
-    (tmp_path / "etc" / "auth").mkdir(parents=True)
-    return tmp_path
-
-
-@pytest.fixture
-def splunkd(test_pki, splunk_home):
-    pki_dir = str(test_pki.ca.cert_path.parent)
-    fake = FakeSplunkd(test_pki.server, SESSION_KEY, {"{PKI}": pki_dir, "{SPLUNK_HOME}": str(splunk_home)}).start()
-    yield fake
-    fake.stop()
+from harness import SESSION_KEY
 
 
 def _write_combined_pem(test_pki, path, password=None):
@@ -140,3 +125,11 @@ def test_no_mappings_yet_gives_an_empty_mapping_list(test_pki, splunkd, splunk_h
     splunkd.empty.add("mappings.json")
 
     assert _load(splunkd, splunk_home).mappings == []
+
+
+def test_mapping_whose_token_could_not_be_decrypted_is_skipped(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    # UCC's masked placeholder is what a list returns without --cred--=1, or when decryption fails.
+    splunkd.content_overrides["mappings.json"] = {"token": "******"}
+
+    assert [m.account for m in _load(splunkd, splunk_home).mappings] == ["svc_agent_b"]
