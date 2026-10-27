@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import resolver
 from .audit import AuditLog, HandshakeFailures
+from .crl import CrlKeeper
 from .upstream import Forwarded, Upstream, UpstreamTimeout, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
@@ -54,9 +55,9 @@ def _parse(body):
     return message if isinstance(message, dict) else None
 
 
-def _tls_fingerprint(config):
+def _tls_fingerprint(config, crl_state):
     """A digest of everything the listener's SSLContext is built from, so a replaced file is noticed."""
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(repr(crl_state).encode())
     for path in (config.ca_bundle, config.server_cert, config.server_key):
         with open(path, "rb") as handle:
             digest.update(hashlib.sha256(handle.read()).digest())
@@ -68,7 +69,7 @@ class ApplyError(Exception):
     """Part of a new config couldn't be applied; the rest was."""
 
 
-_TLS_FIELDS = ("ca_bundle", "server_cert", "server_key", "server_key_password")
+_TLS_FIELDS = ("ca_bundle", "server_cert", "server_key", "server_key_password", "crl_file", "crl_check", "crl_expiry")
 _UPSTREAM_FIELDS = ("upstream_url", "upstream_ca_bundle", "upstream_verify_hostname")
 _ADDRESS_FIELDS = ("listen_host", "listen_port")
 
@@ -334,10 +335,11 @@ class BridgeServer:
     """The bridge. ``on_token_rejected`` is called with a Mapping whose token the upstream refused."""
 
     def __init__(self, config, on_token_rejected=None):
-        self._tls_fingerprint = _tls_fingerprint(config)
-        self.live = _Live(config, listener_context(config), Upstream(config))
-        self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.audit = AuditLog(config.audit_log)
+        self._crl = CrlKeeper(self.audit)
+        self._tls_fingerprint, context = self._tls(config, None)
+        self.live = _Live(config, context, Upstream(config))
+        self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self._on_token_rejected = on_token_rejected
         self._listener = _Listener(self, config.listen_address)
@@ -367,12 +369,10 @@ class BridgeServer:
         """
         live = self.live
         problems = []
-        fingerprint, context = self._tls_fingerprint, live.tls_context
         try:
-            new_fingerprint = _tls_fingerprint(config)
-            if new_fingerprint != fingerprint:
-                fingerprint, context = new_fingerprint, listener_context(config)
+            fingerprint, context = self._tls(config, live)
         except (OSError, ValueError) as exc:
+            fingerprint, context = self._tls_fingerprint, live.tls_context
             problems.append(f"listener certificate or CA bundle: {exc}")
             config = dataclasses.replace(config, **_fields(live.config, _TLS_FIELDS))
         try:
@@ -399,6 +399,16 @@ class BridgeServer:
             log.info("listener moved to %s:%s", *self.address)
         if problems:
             raise ApplyError("; ".join(problems))
+
+    def _tls(self, config, live):
+        """(fingerprint, SSLContext) for ``config``: the current context if nothing it's built from changed."""
+        crl_state = self._crl.refresh(config)
+        fingerprint = _tls_fingerprint(config, crl_state)
+        if live is not None and fingerprint == self._tls_fingerprint:
+            return fingerprint, live.tls_context
+        context = listener_context(config)
+        self._crl.load_into(context, crl_state)
+        return fingerprint, context
 
     def _bind(self, address):
         """A listener on ``address``. Raises OSError, leaving the current listener serving, if it can't bind.
@@ -428,6 +438,7 @@ class BridgeServer:
         self._listener.shutdown()
         self._listener.server_close()
         self.handshake_failures.stop()
+        self._crl.close()
         self.audit.close()
 
     def token_rejected(self, mapping):

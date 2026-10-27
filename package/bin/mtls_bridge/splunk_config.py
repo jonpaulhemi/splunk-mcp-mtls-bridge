@@ -83,10 +83,11 @@ def load(server_uri, session_key, splunk_home):
         upstream_ca_bundle=path(settings.get("upstream_ca_bundle") or "$SPLUNK_HOME/etc/auth/cacert.pem"),
         upstream_verify_hostname=_flag(settings.get("upstream_verify_hostname"), False),
         audit_log=path(AUDIT_LOG),
+        crl_file=path(settings.get("crl_file")) or None,
         mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
     )
     # Settings left empty keep Config's defaults.
-    for name in ("listen_host", "upstream_url"):
+    for name in ("listen_host", "upstream_url", "crl_check", "crl_expiry"):
         if settings.get(name):
             values[name] = settings[name]
     if settings.get("listen_port"):

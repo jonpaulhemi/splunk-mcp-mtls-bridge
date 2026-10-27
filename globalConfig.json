@@ -245,6 +245,55 @@
                         },
                         {
                             "type": "text",
+                            "label": "Client CRL file",
+                            "field": "crl_file",
+                            "required": false,
+                            "help": "Optional. A CRL file (PEM or DER) that your PKI tooling keeps up to date, for example $SPLUNK_HOME/etc/auth/clients.crl. It must hold a CRL from every CA that issues client certificates (and, for chain checking, from every CA in their chains). Leave empty to turn revocation checking off."
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "CRL check depth",
+                            "field": "crl_check",
+                            "defaultValue": "leaf",
+                            "required": false,
+                            "options": {
+                                "disableSearch": true,
+                                "autoCompleteFields": [
+                                    {
+                                        "value": "leaf",
+                                        "label": "Client certificate only (leaf)"
+                                    },
+                                    {
+                                        "value": "chain",
+                                        "label": "Whole chain"
+                                    }
+                                ]
+                            },
+                            "help": "Whether the CRL is checked for the client certificate only, or for every certificate in its chain."
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "When the CRL expires",
+                            "field": "crl_expiry",
+                            "defaultValue": "fail_closed",
+                            "required": false,
+                            "options": {
+                                "disableSearch": true,
+                                "autoCompleteFields": [
+                                    {
+                                        "value": "fail_closed",
+                                        "label": "Reject all clients (fail closed)"
+                                    },
+                                    {
+                                        "value": "fail_open",
+                                        "label": "Stop checking revocation and warn (fail open)"
+                                    }
+                                ]
+                            },
+                            "help": "What happens once the CRL passes its nextUpdate time without a fresh CRL. The bridge warns 24 hours ahead."
+                        },
+                        {
+                            "type": "text",
                             "label": "MCP Server URL",
                             "field": "upstream_url",
                             "defaultValue": "https://127.0.0.1:8089/services/mcp",

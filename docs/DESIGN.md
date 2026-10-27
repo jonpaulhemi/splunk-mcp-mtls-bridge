@@ -27,7 +27,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 - **Bind address:** `0.0.0.0:8443` by default.
 - **TLS:** TLS 1.2 minimum with TLS 1.3 available, a modern cipher list, and `CERT_REQUIRED` against a configurable CA bundle.
 - **Server cert:** defaults to splunkd's `[sslConfig] serverCert`. Cert, key and key password can be overridden. The bridge warns at startup if it's serving Splunk's default self-signed cert.
-- **CRL:** optional. Checking is leaf by default, with chain as an option. A replacement file is swapped in on the config poll, and one that won't parse or has expired is refused. The bridge warns 24 hours before `nextUpdate`, and expiry handling is a setting: `fail_closed` (the default) or `fail_open`.
+- **CRL:** optional. The file must hold a CRL from every CA that issues client certs (and, in chain mode, from every CA in their chains), because OpenSSL rejects a cert whose issuer has no CRL. Checking is leaf by default, with chain as an option. A replacement file is swapped in on the config poll, and one that won't parse or has expired is refused. The bridge warns 24 hours before `nextUpdate`, and expiry handling is a setting: `fail_closed` (the default) or `fail_open`.
 
 ## Identity and mapping
 

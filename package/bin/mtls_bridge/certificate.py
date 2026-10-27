@@ -6,6 +6,7 @@ verified the chain.
 """
 
 import base64
+import datetime
 import hashlib
 import ipaddress
 import re
@@ -242,3 +243,55 @@ def load(path):
         except ValueError:
             raise CertificateError("invalid PEM") from None
     return parse(data)
+
+
+_PEM_CRL = re.compile(rb"-----BEGIN X509 CRL-----(.+?)-----END X509 CRL-----", re.S)
+_UTC_TIME = 0x17
+_GENERALIZED_TIME = 0x18
+
+
+def _time(tag, content):
+    text = content.decode("ascii")
+    if tag == _UTC_TIME:
+        # RFC 5280: two-digit years 50-99 are 19xx, 00-49 are 20xx.
+        text = ("19" if int(text[:2]) >= 50 else "20") + text
+    elif tag != _GENERALIZED_TIME:
+        raise CertificateError(f"expected a time, found DER tag {tag:#x}")
+    try:
+        return datetime.datetime.strptime(text, "%Y%m%d%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise CertificateError(f"unreadable time {text!r}") from None
+
+
+def crl_next_update(der):
+    """The nextUpdate of a DER CRL, or None if it has none. Raises CertificateError if it isn't a CRL."""
+    tag, crl, _ = _read(der, 0)
+    tag, tbs, _ = _read(_expect(tag, crl, _SEQUENCE), 0)
+    fields = list(_children(_expect(tag, tbs, _SEQUENCE)))
+    if fields and fields[0][0] == _INTEGER:
+        fields = fields[1:]  # version
+    if len(fields) < 3:
+        raise CertificateError("malformed CRL")
+    _expect(*fields[0], _SEQUENCE)  # signature algorithm
+    _expect(*fields[1], _SEQUENCE)  # issuer
+    _time(*fields[2])  # thisUpdate
+    if len(fields) > 3 and fields[3][0] in (_UTC_TIME, _GENERALIZED_TIME):
+        return _time(*fields[3])
+    return None
+
+
+def load_crls(data):
+    """Split a PEM or DER CRL file into DER CRLs. Raises CertificateError if it holds none or a bad one."""
+    blocks = _PEM_CRL.findall(data)
+    if not blocks:
+        if data.lstrip().startswith(b"-----"):
+            raise CertificateError("no X509 CRL blocks in the file")
+        crls = [data]
+    else:
+        try:
+            crls = [base64.b64decode(b"".join(block.split()), validate=True) for block in blocks]
+        except ValueError:
+            raise CertificateError("invalid PEM") from None
+    for der in crls:
+        crl_next_update(der)
+    return crls

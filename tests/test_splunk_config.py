@@ -144,3 +144,25 @@ def test_mapping_that_cannot_match_any_cert_is_skipped(test_pki, splunkd, splunk
     splunkd.content_overrides["mappings.json"] = bad_row
 
     assert [m.account for m in _load(splunkd, splunk_home).mappings] == ["svc_agent_b"]
+
+
+def test_crl_is_off_unless_a_file_is_set(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+
+    config = _load(splunkd, splunk_home)
+
+    assert (config.crl_file, config.crl_check, config.crl_expiry) == (None, "leaf", "fail_closed")
+
+
+def test_crl_settings_become_part_of_the_config(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["settings_listener.json"] = {
+        "crl_file": "$SPLUNK_HOME/etc/auth/clients.crl",
+        "crl_check": "chain",
+        "crl_expiry": "fail_open",
+    }
+
+    config = _load(splunkd, splunk_home)
+
+    assert config.crl_file == str(splunk_home / "etc" / "auth" / "clients.crl")
+    assert (config.crl_check, config.crl_expiry) == ("chain", "fail_open")

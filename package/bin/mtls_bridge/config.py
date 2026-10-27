@@ -50,6 +50,10 @@ class Config:
     # Matches the MCP Server app's own payload cap.
     max_body_bytes: int = 128 * 1024
     max_concurrent_per_identity: int = 10
+    # A CRL file (PEM or DER, one CRL per issuing CA); None turns revocation checking off.
+    crl_file: Optional[str] = None
+    crl_check: str = "leaf"  # or "chain"
+    crl_expiry: str = "fail_closed"  # or "fail_open"
     # The audit file; None writes no audit events.
     audit_log: Optional[str] = None
     # Failed handshakes from one IP within this many seconds become one audit event.
