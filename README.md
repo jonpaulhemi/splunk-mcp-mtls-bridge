@@ -25,6 +25,8 @@ Search head clusters, Splunk Cloud and OCSP are out of scope.
 
 The bridge starts within a minute of the Listener tab getting a client CA bundle. After that it picks up every change within 30 seconds, with no restart. Its operational log is `$SPLUNK_HOME/var/log/splunk/ta_mtls_bridge.log`.
 
+**Upgrading from 0.1.0.** Splunk never starts the bridge daemon in 0.1.0, because its `README/inputs.conf.spec` declares no parameter. Install 0.1.1 or later over it (Install app from file, with "Upgrade app" ticked) and restart Splunk. If you patched the spec by hand, the upgrade replaces your edit. If you added `interval =` to it, remove it: with that line Splunk starts the daemon but doesn't restart it after it exits.
+
 ## Configure
 
 ### Listener
@@ -282,10 +284,10 @@ To build the installable app and run AppInspect, as CI does:
 
 ```sh
 .venv/bin/pip install -r requirements-build.txt
-PATH=.venv/bin:$PATH scripts/build_app.sh 0.1.0
+PATH=.venv/bin:$PATH scripts/build_app.sh 0.1.1
 ```
 
-This writes `output/TA-mtls-bridge-0.1.0.tgz`.
+This writes `output/TA-mtls-bridge-0.1.1.tgz`.
 
 To release, push a tag such as `v0.2.0`. CI tests it, builds the app at version 0.2.0 and attaches `TA-mtls-bridge-0.2.0.tgz` to a GitHub release for the tag.
 

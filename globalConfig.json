@@ -355,7 +355,7 @@
     "meta": {
         "name": "TA-mtls-bridge",
         "restRoot": "ta_mtls_bridge",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "displayName": "mTLS Bridge for Splunk MCP",
         "schemaVersion": "0.0.10",
         "supportedThemes": [
