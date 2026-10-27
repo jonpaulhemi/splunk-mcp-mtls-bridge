@@ -1,8 +1,9 @@
 """The bridge's life as a splunkd modular input.
 
 splunkd starts this script once (a single-instance scheme with one fixed stanza) and passes its URI
-and a session key on stdin. The script reads the app's config with that key, runs the bridge, and
-exits on SIGTERM or when splunkd itself goes away. splunkd restarts it after the stanza's interval.
+and a session key on stdin. The script reads the app's config with that key, runs the bridge, re-reads
+the config every poll and applies changes live, and exits on SIGTERM, when splunkd itself goes away,
+or when splunkd stops accepting the key. splunkd restarts it after the stanza's interval.
 """
 
 import fcntl
@@ -10,7 +11,9 @@ import logging
 import logging.handlers
 import os
 import signal
+import ssl
 import threading
+import time
 import xml.etree.ElementTree as ElementTree
 
 from . import splunk_config
@@ -32,6 +35,9 @@ SCHEME = """<scheme>
 
 _LOG_FILE = "ta_mtls_bridge.log"
 _PARENT_CHECK_SECONDS = 1.0
+_POLL_SECONDS = 30.0
+# Tests shorten the config poll with this environment variable.
+_POLL_ENV = "TA_MTLS_BRIDGE_POLL_SECONDS"
 
 
 def main(argv, stdin):
@@ -71,15 +77,8 @@ def _run(inputs, splunk_home, parent, stopping):
     except splunk_config.ConfigError as exc:
         log.error("bridge configuration error: %s", exc)
         return 1
-
-    try:
-        splunk_config.sync_audit_input(inputs["server_uri"], inputs["session_key"])
-    except splunk_config.SessionExpired as exc:
-        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+    if not _sync_audit_input(inputs):
         return 1
-    except splunk_config.ConfigError as exc:
-        # The bridge still writes the audit file; only where Splunk indexes it is stale.
-        log.error("cannot update the audit input: %s", exc)
 
     if stopping.is_set():
         return 0
@@ -89,13 +88,59 @@ def _run(inputs, splunk_home, parent, stopping):
         log.error("cannot start listener on %s:%s: %s", config.listen_host, config.listen_port, exc)
         return 1
     log.info("bridge listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))
-    while not stopping.wait(_PARENT_CHECK_SECONDS):
+
+    poll = float(os.environ.get(_POLL_ENV) or _POLL_SECONDS)
+    next_poll = time.monotonic() + poll
+    status = 0
+    while not stopping.wait(min(_PARENT_CHECK_SECONDS, poll)):
         if os.getppid() != parent:
             log.info("parent process exited; stopping")
             break
+        if time.monotonic() >= next_poll:
+            next_poll = time.monotonic() + poll
+            if not _reload(bridge, inputs, splunk_home):
+                status = 1
+                break
     bridge.stop()
     log.info("bridge stopped")
-    return 0
+    return status
+
+
+def _reload(bridge, inputs, splunk_home):
+    """Re-read the config and apply it. Returns False if the daemon must exit for a fresh session key."""
+    try:
+        config = splunk_config.load(inputs["server_uri"], inputs["session_key"], splunk_home)
+    except splunk_config.SessionExpired as exc:
+        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        return False
+    except splunk_config.ConfigError as exc:
+        log.error("cannot reload the configuration (%s); keeping the last good configuration", exc)
+        return True
+    if not _sync_audit_input(inputs):
+        return False
+    changed = config != bridge.config
+    try:
+        # Applied even when unchanged, to pick up a CA bundle or cert replaced at the same path.
+        bridge.apply(config)
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        log.error("cannot apply the configuration (%s); keeping the last good configuration", exc)
+        return True
+    if changed:
+        log.info("configuration reloaded: listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))
+    return True
+
+
+def _sync_audit_input(inputs):
+    """Bring the audit monitor input in line with the Audit page. Returns False on a rejected session key."""
+    try:
+        splunk_config.sync_audit_input(inputs["server_uri"], inputs["session_key"])
+    except splunk_config.SessionExpired as exc:
+        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        return False
+    except splunk_config.ConfigError as exc:
+        # The bridge still writes the audit file; only where Splunk indexes it is stale.
+        log.error("cannot update the audit input: %s", exc)
+    return True
 
 
 def _parse_input(text):
