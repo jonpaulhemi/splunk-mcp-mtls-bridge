@@ -116,14 +116,18 @@ def _mapping(entry):
     except ValueError:
         log.warning("mapping %s has an unreadable token expiry %r", entry["name"], expiry)
         expiry = None
-    return Mapping(
-        issuer=content.get("issuer", ""),
-        identity_type=content.get("identity_type", ""),
-        identity_value=content.get("identity_value", ""),
-        account=content.get("account", ""),
-        token=token,
-        token_expiry=expiry,
-    )
+    try:
+        return Mapping(
+            issuer=content.get("issuer", ""),
+            identity_type=content.get("identity_type", ""),
+            identity_value=content.get("identity_value", ""),
+            account=content.get("account", ""),
+            token=token,
+            token_expiry=expiry,
+        )
+    except ValueError as exc:
+        log.error("mapping %s can never match a certificate (%s); skipping it", entry["name"], exc)
+        return None
 
 
 def _int(settings, name):

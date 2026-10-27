@@ -95,7 +95,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         message = _parse(body)
         rpc_id = message.get("id") if message else None
-        peer = identity.from_peercert(self.connection.getpeercert())
+        peer = identity.from_der(self.connection.getpeercert(binary_form=True))
         try:
             mapping = resolver.resolve(bridge.config.mappings, peer)
         except resolver.Rejection as rejection:

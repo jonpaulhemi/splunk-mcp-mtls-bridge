@@ -17,7 +17,7 @@ def test_daemon_imports_only_the_standard_library():
         f"import pkgutil, importlib, sys; sys.path.insert(0, {str(BIN)!r}); import mtls_bridge; "
         "[importlib.import_module('mtls_bridge.' + m.name) for m in pkgutil.iter_modules(mtls_bridge.__path__)]"
     )
-    result = subprocess.run([sys.executable, "-I", "-S", "-c", code], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 

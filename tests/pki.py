@@ -52,9 +52,9 @@ def _write_key(path, key):
     )
 
 
-def make_ca(directory, cn):
+def make_ca(directory, cn, org="Bridge Test"):
     key = ec.generate_private_key(ec.SECP256R1())
-    name = _name(cn)
+    name = _name(cn, org)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -140,9 +140,23 @@ class TestPKI:
     mapped: Issued
     unmapped: Issued
     other_ca_client: Issued
+    escaped_ca: CA
+    escaped_client: Issued
+    multi: Issued
+    ambiguous: Issued
+    renewed: Issued
 
 
 MAPPED_URI = "spiffe://bridge.test/agent-a"
+UPN_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
+# An organisation name that needs RFC 4514 escaping.
+ESCAPED_ORG = 'Example, "Inc"+Co'
+
+
+def upn(value):
+    """A Microsoft UPN subject alternative name."""
+    encoded = value.encode()
+    return x509.OtherName(UPN_OID, bytes([0x0C, len(encoded)]) + encoded)
 
 
 def build(directory):
@@ -169,7 +183,46 @@ def build(directory):
     other_ca_client = issue(
         other_ca, directory, "other_ca_client", "agent-a", sans=[x509.UniformResourceIdentifier(MAPPED_URI)]
     )
+    escaped_ca = make_ca(directory, "Escaped CA", org=ESCAPED_ORG)
+    escaped_client = issue(
+        escaped_ca,
+        directory,
+        "escaped_client",
+        "escaped",
+        sans=[x509.UniformResourceIdentifier("spiffe://bridge.test/escaped")],
+    )
+    multi = issue(
+        ca,
+        directory,
+        "multi",
+        "Agent-C",
+        sans=[
+            x509.UniformResourceIdentifier("spiffe://bridge.test/Agent-C"),
+            x509.DNSName("Agent-C.Bridge.Test"),
+            x509.RFC822Name("Agent.C@Bridge.Test"),
+            x509.IPAddress(ipaddress.ip_address("10.0.0.7")),
+            x509.IPAddress(ipaddress.ip_address("2001:db8::7")),
+            upn("agent-c@CORP.TEST"),
+        ],
+    )
+    ambiguous = issue(
+        ca,
+        directory,
+        "ambiguous",
+        "agent-d",
+        sans=[
+            x509.UniformResourceIdentifier("spiffe://bridge.test/amb-1"),
+            x509.UniformResourceIdentifier("spiffe://bridge.test/amb-2"),
+        ],
+    )
+    # Same issuer and identity as "mapped", with a new key and serial.
+    renewed = issue(ca, directory, "renewed", "agent-a", sans=[x509.UniformResourceIdentifier(MAPPED_URI)])
     return TestPKI(
+        escaped_ca=escaped_ca,
+        escaped_client=escaped_client,
+        multi=multi,
+        ambiguous=ambiguous,
+        renewed=renewed,
         ca=ca,
         other_ca=other_ca,
         server=server,

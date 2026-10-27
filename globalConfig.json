@@ -135,7 +135,7 @@
                             "type": "text",
                             "label": "Identity",
                             "field": "identity_value",
-                            "help": "The identity value, for example spiffe://example.org/agent or agent.example.org.",
+                            "help": "The identity value, for example spiffe://example.org/agent or agent.example.org. DNS, email and UPN values ignore case; URI and CN values must match exactly; IP addresses match in any notation.",
                             "required": true,
                             "validators": [
                                 {
@@ -183,7 +183,9 @@
                                 }
                             ]
                         }
-                    ]
+                    ],
+                    "restHandlerModule": "mtls_bridge_mappings_handler",
+                    "restHandlerClass": "MappingsHandler"
                 },
                 {
                     "name": "listener",

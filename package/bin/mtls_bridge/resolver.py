@@ -8,8 +8,8 @@ class Rejection(Exception):
 
 
 def resolve(mappings, peer):
-    issuer = peer.issuer.lower()
-    matches = [m for m in mappings if m.key[0] == issuer and m.key[1:] in peer.identities]
+    keys = peer.keys
+    matches = [m for m in mappings if m.key in keys]
     if not matches:
         raise Rejection("unmapped")
     if len(matches) > 1:
