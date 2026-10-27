@@ -96,6 +96,8 @@ class Config:
     # Matches the MCP Server app's own payload cap.
     max_body_bytes: int = 128 * 1024
     max_concurrent_per_identity: int = 10
+    # Each user behind a client that proxies users also has this cap, keyed by canonical DN.
+    max_concurrent_per_user: int = 2
     # A CRL file (PEM or DER, one CRL per issuing CA); None turns revocation checking off.
     crl_file: Optional[str] = None
     crl_check: str = "leaf"  # or "chain"

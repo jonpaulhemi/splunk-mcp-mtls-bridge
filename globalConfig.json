@@ -600,6 +600,24 @@
                         },
                         {
                             "type": "text",
+                            "label": "Max concurrent requests per user",
+                            "field": "max_concurrent_per_user",
+                            "defaultValue": "2",
+                            "help": "How many calls one user behind a client that proxies users may have in flight at once. The client's own limit still applies.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "number",
+                                    "range": [
+                                        1,
+                                        1000
+                                    ],
+                                    "errorMsg": "Must be between 1 and 1000."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
                             "label": "MCP Server URL",
                             "field": "upstream_url",
                             "defaultValue": "https://127.0.0.1:8089/services/mcp",
