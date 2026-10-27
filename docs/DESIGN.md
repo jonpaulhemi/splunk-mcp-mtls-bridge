@@ -51,6 +51,7 @@ Settled in the grilling for #41, which is the spec.
   - a flagged client sends no user header;
   - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
   - no rule matches, or two attribute rules do;
+  - the matching rule's role account didn't load (an unreadable token, say). The user never falls through to a broader rule.
   - an unflagged client sends the header, `ping` included.
 - **Without a user:** a flagged client's `ping` and `/health` work without the header.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.

@@ -280,6 +280,22 @@ def test_new_role_account_tokens_are_checked_upstream(test_pki, upstream):
     )
 
 
+def test_rotated_role_account_token_is_checked_again(test_pki, upstream):
+    config = make_proxy_config(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: all(r["token_status"] == "ok" for r in bridge.health()["role_accounts"]))
+        rotated = dataclasses.replace(config.role_accounts[0], token="rotated-analyst-token")
+        bridge.apply(dataclasses.replace(config, role_accounts=[rotated, config.role_accounts[1]]))
+        assert bridge.health()["role_accounts"][0]["token_status"] == "unchecked"
+        bridge.check_tokens()
+        wait_for(lambda: bridge.health()["role_accounts"][0]["token_status"] == "ok")
+
+    checked = [r.headers["Authorization"] for r in _initializes(upstream)]
+    assert checked.count("Bearer rotated-analyst-token") == 1
+    assert checked.count("Bearer " + ENGINEER_TOKEN) == 1
+
+
 def test_health_lists_role_accounts_and_never_their_tokens(test_pki, upstream):
     with running_bridge(_role_accounts_expiring_in(30, test_pki, upstream)) as bridge:
         health = _role_health(bridge, test_pki)

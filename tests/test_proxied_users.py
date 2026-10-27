@@ -300,3 +300,17 @@ def test_two_matching_attribute_rules_are_ambiguous(test_pki, upstream, audit_pa
 def test_attribute_rule_that_is_not_a_dn_cannot_be_built():
     with pytest.raises(ValueError):
         UserRule("bad", "attributes", "Users", "analysts")
+
+
+def test_exact_rule_whose_role_account_is_missing_does_not_fall_through(test_pki, upstream, audit_path):
+    """An exact rule still wins when its role account didn't load: John gets no access, not the group's."""
+    rules = [
+        UserRule("org_users", "attributes", "OU=Users,O=Org", "analysts"),
+        UserRule("john", "dn", JOHN, "gone"),
+    ]
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, rules)) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
+
+    assert status == 403
+    assert upstream.received == []
+    assert _events(audit_path)[0]["reason"] == "user_unmatched"

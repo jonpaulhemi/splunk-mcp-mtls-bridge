@@ -470,8 +470,9 @@ class BridgeServer:
             except OSError as exc:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
-        self.live = _Live(config, context, upstream, crl_state)
+        # Tokens first, so /health never sees a new token the monitor doesn't know yet.
         self.tokens.update(_token_holders(config), upstream)
+        self.live = _Live(config, context, upstream, crl_state)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
         if listener is not None and listener is not self._listener:
