@@ -9,31 +9,19 @@ import pytest
 from mtls_bridge.config import Mapping, RoleAccount, UserRule
 
 import pki
-from harness import MAPPED_TOKEN, client_of, make_config, running_bridge, wait_for
+from harness import (
+    ANALYST_TOKEN,
+    ENGINEER_TOKEN,
+    JOHN,
+    MAPPED_TOKEN,
+    client_of,
+    make_proxy_config,
+    running_bridge,
+    wait_for,
+)
 
 HEADER = "X-ProxiedEntitiesChain"
-JOHN = "CN=John Smith,OU=Users,O=Org,C=US"
-ANALYST_TOKEN = "analyst-role-token"
-ENGINEER_TOKEN = "engineer-role-token"
-
-
-def _proxy_config(test_pki, upstream, **overrides):
-    """The ``mapped`` cert maps to an account as usual; the ``unmapped`` cert's identity proxies users."""
-    base = make_config(test_pki, upstream)
-    values = dict(
-        mappings=base.mappings
-        + [Mapping(test_pki.ca.issuer_dn, "URI", "spiffe://bridge.test/agent-b", proxies_users=True)],
-        role_accounts=[
-            RoleAccount("analysts", "mcp_analyst", token=ANALYST_TOKEN),
-            RoleAccount("engineers", "mcp_engineer", token=ENGINEER_TOKEN),
-        ],
-        user_rules=[
-            UserRule("john", "dn", JOHN, "analysts"),
-            UserRule("jane", "dn", "CN=Jane Doe,OU=Users,O=Org,C=US", "engineers"),
-        ],
-    )
-    values.update(overrides)
-    return dataclasses.replace(base, **values)
+_proxy_config = make_proxy_config
 
 
 @pytest.fixture

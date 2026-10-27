@@ -68,9 +68,10 @@ def _check_body():
 
 
 class TokenMonitor:
-    """Holds the token status and expiry warnings of the current mappings.
+    """Holds the token status and expiry warnings of the current token holders: mappings and role accounts.
 
-    ``update`` sets the current mappings; results for tokens no longer among them are dropped.
+    ``update`` sets the current holders; results for tokens no longer among them are dropped. A holder has
+    ``key``, ``account``, ``token``, ``token_expiry`` and ``audit_fields()``.
     """
 
     def __init__(self, audit):
@@ -126,10 +127,8 @@ class TokenMonitor:
             self._checker = threading.Thread(target=self._check_upstream, name="mtls-bridge-token-check", daemon=True)
             self._checker.start()
 
-    def report(self, today):
-        """Each current mapping's account, expiry and token status, for /health."""
-        with self._lock:
-            mappings = self._mappings
+    def report(self, holders, today):
+        """Each of ``holders``' account, expiry and token status, for /health."""
         return [
             {
                 "account": m.account,
@@ -138,7 +137,7 @@ class TokenMonitor:
                 "expiry_status": expiry_status(m, today),
                 "token_status": self.status(m),
             }
-            for m in mappings
+            for m in holders
         ]
 
     def stop(self):
@@ -174,9 +173,7 @@ class TokenMonitor:
         self._audit.write(
             "token_expiry",
             user=mapping.account,
-            issuer=mapping.issuer,
-            identity_type=mapping.identity_type,
-            identity=mapping.identity_value,
+            **mapping.audit_fields(),
             token_expiry=expiry,
             days_remaining=days,
             status=status,

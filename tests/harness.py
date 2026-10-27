@@ -1,19 +1,23 @@
 """Shared helpers for driving the bridge as a black box."""
 
 import contextlib
+import dataclasses
 import http.client
 import json
 import ssl
 import time
 from pathlib import Path
 
-from mtls_bridge.config import Config, Mapping
+from mtls_bridge.config import Config, Mapping, RoleAccount, UserRule
 from mtls_bridge.server import BridgeServer
 
 import pki
 
 ROOT = Path(__file__).resolve().parent.parent
 MAPPED_TOKEN = "mapped-account-token"
+ANALYST_TOKEN = "analyst-role-token"
+ENGINEER_TOKEN = "engineer-role-token"
+JOHN = "CN=John Smith,OU=Users,O=Org,C=US"
 # The session key the fake splunkd accepts.
 SESSION_KEY = "session-key-from-splunkd"
 
@@ -39,6 +43,26 @@ def make_config(test_pki, upstream, **overrides):
     )
     values.update(overrides)
     return Config(**values)
+
+
+def make_proxy_config(test_pki, upstream, **overrides):
+    """make_config, plus: the ``unmapped`` cert's identity proxies users, John's rule sends him to the
+    analysts role account, and Jane's to the engineers one."""
+    base = make_config(test_pki, upstream)
+    values = dict(
+        mappings=base.mappings
+        + [Mapping(test_pki.ca.issuer_dn, "URI", "spiffe://bridge.test/agent-b", proxies_users=True)],
+        role_accounts=[
+            RoleAccount("analysts", "mcp_analyst", token=ANALYST_TOKEN),
+            RoleAccount("engineers", "mcp_engineer", token=ENGINEER_TOKEN),
+        ],
+        user_rules=[
+            UserRule("john", "dn", JOHN, "analysts"),
+            UserRule("jane", "dn", "CN=Jane Doe,OU=Users,O=Org,C=US", "engineers"),
+        ],
+    )
+    values.update(overrides)
+    return dataclasses.replace(base, **values)
 
 
 @contextlib.contextmanager

@@ -34,6 +34,10 @@ class Mapping:
         """The identity this mapping matches, canonicalised: (issuer, identity type, identity value)."""
         return self._key
 
+    def audit_fields(self):
+        """What names this mapping in an audit event about its token."""
+        return {"issuer": self.issuer, "identity_type": self.identity_type, "identity": self.identity_value}
+
 
 @dataclass(frozen=True)
 class RoleAccount:
@@ -47,6 +51,10 @@ class RoleAccount:
     @property
     def key(self):
         return ("role_account", self.name)
+
+    def audit_fields(self):
+        """What names this role account in an audit event about its token."""
+        return {"role_account": self.name}
 
 
 @dataclass(frozen=True)

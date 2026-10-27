@@ -357,9 +357,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._headers_sent = True
 
 
-def _token_holders(config):
-    """The mappings whose tokens the token monitor watches: those that don't proxy users, which have none."""
+def _token_mappings(config):
+    """The mappings with tokens: those that don't proxy users, which have none."""
     return [mapping for mapping in config.mappings if not mapping.proxies_users]
+
+
+def _token_holders(config):
+    """Everything whose token the token monitor watches."""
+    return _token_mappings(config) + list(config.role_accounts)
 
 
 class _Listener(ThreadingHTTPServer):
@@ -530,18 +535,25 @@ class BridgeServer:
         self.tokens.check_new()
 
     def health(self, today=None):
-        """What /health returns: the bridge's status, its CRL, and each mapping's token. No token values."""
+        """What /health returns: the bridge's status, its CRL, and each mapping's and role account's token.
+        No token values."""
         live = self.live
-        mappings = self.tokens.report(today or datetime.date.today())
+        today = today or datetime.date.today()
+        mappings = self.tokens.report(_token_mappings(live.config), today)
+        role_accounts = [
+            {"name": role.name, **entry}
+            for role, entry in zip(live.config.role_accounts, self.tokens.report(live.config.role_accounts, today))
+        ]
+        holders = mappings + role_accounts
         next_update = live.crl.next_update
         crl_expired = bool(
             live.crl.refuse_all
             or live.crl.warning
             or (next_update is not None and next_update <= datetime.datetime.now(datetime.timezone.utc))
         )
-        if crl_expired or any(m["token_status"] == tokens.INVALID for m in mappings):
+        if crl_expired or any(m["token_status"] == tokens.INVALID for m in holders):
             status = "degraded"
-        elif any(m["expiry_status"] in (tokens.EXPIRING, tokens.EXPIRED) for m in mappings):
+        elif any(m["expiry_status"] in (tokens.EXPIRING, tokens.EXPIRED) for m in holders):
             status = "warning"
         else:
             status = "ok"
@@ -556,4 +568,5 @@ class BridgeServer:
                 "expired": crl_expired,
             },
             "mappings": mappings,
+            "role_accounts": role_accounts,
         }
