@@ -64,7 +64,7 @@ Settled in the grilling for #41, which is the spec.
 - **Request headers:** it strips the client `Authorization` header, injects the bearer token, and sends `Host`, `X-Forwarded-For`, `X-MCP-Request-Id` and `traceparent`.
 - **Responses:** it streams them through and strips `WWW-Authenticate`. An upstream 401 becomes a 502 JSON-RPC "bridge credential invalid" error, and the mapping is flagged.
 - **Sessions:** none. The upstream is stateless.
-- **Limits:** a 128 KiB body cap, 10 concurrent requests per identity, and a 300 s upstream timeout.
+- **Limits:** a 128 KiB body cap, 10 concurrent requests per identity, and a 300 s upstream timeout. A proxied call also needs one of its user's slots (the Listener page's "Max concurrent requests per user", default 2, keyed by canonical DN). The 429 says which limit was hit.
 
 ## Tokens
 

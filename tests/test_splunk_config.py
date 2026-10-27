@@ -223,3 +223,11 @@ def test_user_rule_that_cannot_match_any_user_is_skipped(test_pki, splunkd, splu
     splunkd.content_overrides["user_rules.json"] = bad_rule
 
     assert [r.name for r in _load(splunkd, splunk_home).user_rules] == ["jane"]
+
+
+def test_max_concurrent_per_user_comes_from_the_listener_page(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    assert _load(splunkd, splunk_home).max_concurrent_per_user == 2
+
+    splunkd.content_overrides["settings_listener.json"] = {"max_concurrent_per_user": "5"}
+    assert _load(splunkd, splunk_home).max_concurrent_per_user == 5

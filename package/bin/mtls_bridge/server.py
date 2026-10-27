@@ -110,7 +110,7 @@ _Live = collections.namedtuple("_Live", "config tls_context upstream crl")
 
 
 class _ConcurrencyLimiter:
-    """Caps in-flight requests per mapping identity."""
+    """Caps in-flight requests per key: a mapping's identity, or a proxied user's DN."""
 
     def __init__(self, limit):
         self.limit = limit
@@ -118,9 +118,8 @@ class _ConcurrencyLimiter:
         self._lock = threading.Lock()
 
     @contextlib.contextmanager
-    def slot(self, mapping):
-        """Yield True while holding a slot for ``mapping``, or False if it has none free."""
-        key = mapping.key
+    def slot(self, key):
+        """Yield True while holding a slot for ``key``, or False if it has none free."""
         with self._lock:
             acquired = self._in_flight.get(key, 0) < self.limit
             if acquired:
@@ -260,9 +259,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         # The account and token the call runs as.
         credential = mapping if self._user is None else self._user.role_account
-        with bridge.limiter.slot(mapping) as acquired:
-            if not acquired:
+        with contextlib.ExitStack() as slots:
+            if not slots.enter_context(bridge.limiter.slot(mapping.key)):
                 self._send_rpc_error(429, _ERR_BUSY, "too many concurrent requests for this client", rpc_id)
+                return
+            if self._user is not None and not slots.enter_context(bridge.user_limiter.slot(self._user.dn)):
+                self._send_rpc_error(429, _ERR_BUSY, "too many concurrent requests for this user", rpc_id)
                 return
             self._forward(bridge, credential, body, rpc_id)
 
@@ -422,6 +424,7 @@ class BridgeServer:
             self.audit.close()
             raise
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
+        self.user_limiter = _ConcurrencyLimiter(config.max_concurrent_per_user)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self.tokens = TokenMonitor(self.audit)
         self.tokens.update(_token_holders(config), self.live.upstream)
@@ -475,6 +478,7 @@ class BridgeServer:
         self.live = _Live(config, context, upstream, crl_state)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
+        self.user_limiter.limit = config.max_concurrent_per_user
         if listener is not None and listener is not self._listener:
             old, self._listener = self._listener, listener
             self._start_serving(listener)

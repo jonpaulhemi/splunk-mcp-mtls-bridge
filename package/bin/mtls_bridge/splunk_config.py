@@ -96,8 +96,9 @@ def load(server_uri, session_key, splunk_home):
     for name in ("listen_host", "upstream_url", "crl_check", "crl_expiry"):
         if settings.get(name):
             values[name] = settings[name]
-    if settings.get("listen_port"):
-        values["listen_port"] = _int(settings, "listen_port")
+    for name in ("listen_port", "max_concurrent_per_user"):
+        if settings.get(name):
+            values[name] = _int(settings, name)
     return Config(**values)
 
 
