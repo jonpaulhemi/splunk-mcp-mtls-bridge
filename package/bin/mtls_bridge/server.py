@@ -79,7 +79,7 @@ def _fields(config, names):
 
 
 # What one request is served with, swapped as a whole when the config changes.
-_Live = collections.namedtuple("_Live", "config tls_context upstream")
+_Live = collections.namedtuple("_Live", "config tls_context upstream crl")
 
 
 class _ConcurrencyLimiter:
@@ -159,6 +159,8 @@ class _Handler(BaseHTTPRequestHandler):
         }
         if self._aborted:
             fields["aborted"] = self._aborted
+        if self._live.crl.warning:
+            fields["warning"] = self._live.crl.warning
         audit = self.server.bridge.audit
         if self._rejection is not None:
             audit.write("rejection", reason=self._rejection, **fields, **(self._peer.describe() if self._peer else {}))
@@ -306,6 +308,9 @@ class _Listener(ThreadingHTTPServer):
         # and with the SSLContext current when the connection is served, so a replaced CA bundle or
         # cert applies to new handshakes.
         live = self.bridge.live
+        if live.crl.refuse_all:
+            self.bridge.handshake_failures.record(client_address[0], client_address[1], None, live.crl.refuse_all)
+            return
         request.settimeout(live.config.handshake_timeout)
         tls = live.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
         try:
@@ -337,12 +342,17 @@ class BridgeServer:
     def __init__(self, config, on_token_rejected=None):
         self.audit = AuditLog(config.audit_log)
         self._crl = CrlKeeper(self.audit)
-        self._tls_fingerprint, context = self._tls(config, None)
-        self.live = _Live(config, context, Upstream(config))
+        try:
+            self._tls_fingerprint, context, crl_state = self._tls(config, None)
+            self.live = _Live(config, context, Upstream(config), crl_state)
+            self._listener = _Listener(self, config.listen_address)
+        except Exception:
+            self._crl.close()
+            self.audit.close()
+            raise
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self._on_token_rejected = on_token_rejected
-        self._listener = _Listener(self, config.listen_address)
 
     @property
     def config(self):
@@ -370,10 +380,10 @@ class BridgeServer:
         live = self.live
         problems = []
         try:
-            fingerprint, context = self._tls(config, live)
+            fingerprint, context, crl_state = self._tls(config, live)
         except (OSError, ValueError) as exc:
-            fingerprint, context = self._tls_fingerprint, live.tls_context
-            problems.append(f"listener certificate or CA bundle: {exc}")
+            fingerprint, context, crl_state = self._tls_fingerprint, live.tls_context, live.crl
+            problems.append(f"listener TLS settings (certificate, key, CA bundle or CRL): {exc}")
             config = dataclasses.replace(config, **_fields(live.config, _TLS_FIELDS))
         try:
             upstream = Upstream(config)
@@ -388,7 +398,7 @@ class BridgeServer:
             except OSError as exc:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
-        self.live = _Live(config, context, upstream)
+        self.live = _Live(config, context, upstream, crl_state)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
         if listener is not None and listener is not self._listener:
@@ -401,14 +411,15 @@ class BridgeServer:
             raise ApplyError("; ".join(problems))
 
     def _tls(self, config, live):
-        """(fingerprint, SSLContext) for ``config``: the current context if nothing it's built from changed."""
+        """(fingerprint, SSLContext, CrlState) for ``config``, reusing the current context if nothing it's
+        built from changed."""
         crl_state = self._crl.refresh(config)
         fingerprint = _tls_fingerprint(config, crl_state)
         if live is not None and fingerprint == self._tls_fingerprint:
-            return fingerprint, live.tls_context
+            return fingerprint, live.tls_context, crl_state
         context = listener_context(config)
         self._crl.load_into(context, crl_state)
-        return fingerprint, context
+        return fingerprint, context, crl_state
 
     def _bind(self, address):
         """A listener on ``address``. Raises OSError, leaving the current listener serving, if it can't bind.

@@ -155,6 +155,9 @@ class TestPKI:
     revoked: Issued  # for CRL tests; a CRL from ``ca`` lists it
     intermediate: CA  # signed by ``ca``
     via_intermediate: Issued  # issued by ``intermediate``
+    # CRL files by name: valid (revokes ``revoked``), expired, malformed, revoked_intermediate, near_expiry.
+    # Each covers both issuing CAs, as leaf checking needs.
+    crls: dict
 
 
 MAPPED_URI = "spiffe://bridge.test/agent-a"
@@ -265,10 +268,24 @@ def build(directory):
         "agent-i",
         sans=[x509.UniformResourceIdentifier(INTERMEDIATE_URI)],
     )
+    hour = datetime.timedelta(hours=1)
+    crl_contents = {
+        "valid": crl(ca, [revoked.cert]) + crl(intermediate),
+        "expired": crl(ca, next_update=-hour, this_update=-2 * hour)
+        + crl(intermediate, next_update=-hour, this_update=-2 * hour),
+        "malformed": b"-----BEGIN X509 CRL-----\nbm90IGEgQ1JM\n-----END X509 CRL-----\n",
+        "revoked_intermediate": crl(ca, [intermediate]) + crl(intermediate),
+        "near_expiry": crl(ca, next_update=12 * hour) + crl(intermediate, next_update=12 * hour),
+    }
+    crls = {}
+    for crl_name, content in crl_contents.items():
+        crls[crl_name] = directory / f"crl_{crl_name}.pem"
+        crls[crl_name].write_bytes(content)
     # Same issuer and identity as "mapped", with a new key and serial.
     renewed = issue(ca, directory, "renewed", "agent-a", sans=[x509.UniformResourceIdentifier(MAPPED_URI)])
     return TestPKI(
         revoked=revoked,
+        crls=crls,
         intermediate=intermediate,
         via_intermediate=via_intermediate,
         escaped_ca=escaped_ca,

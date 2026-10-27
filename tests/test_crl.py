@@ -56,18 +56,17 @@ def _status(bridge, test_pki, issued):
         return "handshake failed"
 
 
-def _leaf_crls(test_pki, revoked=()):
-    """CRLs for both issuing CAs, which leaf checking needs for every client's issuer."""
-    return pki.crl(test_pki.ca, revoked) + pki.crl(test_pki.intermediate)
-
-
 def _audit(tmp_path):
     path = tmp_path / "audit.log"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def _use(crl_path, source):
+    crl_path.write_bytes(source.read_bytes())
+
+
 def test_revoked_cert_fails_the_handshake_and_others_still_work(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_leaf_crls(test_pki, revoked=[test_pki.revoked.cert]))
+    _use(crl_path, test_pki.crls["valid"])
     with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path)) as bridge:
         assert _status(bridge, test_pki, test_pki.revoked) == "handshake failed"
         assert _status(bridge, test_pki, test_pki.mapped) == 200
@@ -78,14 +77,14 @@ def test_revoked_cert_fails_the_handshake_and_others_still_work(test_pki, upstre
 
 
 def test_without_a_crl_path_revocation_is_not_checked(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_leaf_crls(test_pki, revoked=[test_pki.revoked.cert]))
+    _use(crl_path, test_pki.crls["valid"])
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_file=None)
     with running_bridge(config) as bridge:
         assert _status(bridge, test_pki, test_pki.revoked) == 200
 
 
 def test_revoked_intermediate_blocks_its_leaves_only_in_chain_mode(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(pki.crl(test_pki.ca, revoked=[test_pki.intermediate]) + pki.crl(test_pki.intermediate))
+    _use(crl_path, test_pki.crls["revoked_intermediate"])
     with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_check="leaf")) as bridge:
         assert _status(bridge, test_pki, test_pki.via_intermediate) == 200
     with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_check="chain")) as bridge:
@@ -94,29 +93,21 @@ def test_revoked_intermediate_blocks_its_leaves_only_in_chain_mode(test_pki, ups
 
 
 def test_new_crl_is_swapped_in_on_the_next_poll(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_leaf_crls(test_pki))
+    crl_path.write_bytes(pki.crl(test_pki.ca) + pki.crl(test_pki.intermediate))
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
     with running_bridge(config) as bridge:
         assert _status(bridge, test_pki, test_pki.revoked) == 200
-        crl_path.write_bytes(_leaf_crls(test_pki, revoked=[test_pki.revoked.cert]))
+        _use(crl_path, test_pki.crls["valid"])
         bridge.apply(config)
         assert _status(bridge, test_pki, test_pki.revoked) == "handshake failed"
 
 
-@pytest.mark.parametrize(
-    "replacement",
-    [
-        lambda test_pki: b"-----BEGIN X509 CRL-----\nbm90IGEgQ1JM\n-----END X509 CRL-----\n",
-        lambda test_pki: pki.crl(test_pki.ca, next_update=-HOUR, this_update=-2 * HOUR)
-        + pki.crl(test_pki.intermediate, next_update=-HOUR, this_update=-2 * HOUR),
-    ],
-    ids=["malformed", "expired"],
-)
+@pytest.mark.parametrize("replacement", ["malformed", "expired"])
 def test_bad_replacement_keeps_the_previous_crl(test_pki, upstream, ca_bundle, crl_path, tmp_path, caplog, replacement):
-    crl_path.write_bytes(_leaf_crls(test_pki, revoked=[test_pki.revoked.cert]))
+    _use(crl_path, test_pki.crls["valid"])
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
     with running_bridge(config) as bridge:
-        crl_path.write_bytes(replacement(test_pki))
+        _use(crl_path, test_pki.crls[replacement])
         with caplog.at_level(logging.ERROR, logger="mtls_bridge"):
             bridge.apply(config)
 
@@ -125,8 +116,29 @@ def test_bad_replacement_keeps_the_previous_crl(test_pki, upstream, ca_bundle, c
         assert _status(bridge, test_pki, test_pki.mapped) == 200
 
 
+def test_crl_that_is_not_valid_yet_is_refused(test_pki, upstream, ca_bundle, crl_path, tmp_path, caplog):
+    _use(crl_path, test_pki.crls["valid"])
+    config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
+    with running_bridge(config) as bridge:
+        crl_path.write_bytes(pki.crl(test_pki.ca, this_update=HOUR) + pki.crl(test_pki.intermediate))
+        with caplog.at_level(logging.ERROR, logger="mtls_bridge"):
+            bridge.apply(config)
+        assert "isn't valid yet" in caplog.text
+        assert _status(bridge, test_pki, test_pki.mapped) == 200
+
+
+def test_bad_crl_file_on_first_enable_stays_refused(test_pki, upstream, ca_bundle, crl_path, tmp_path):
+    _use(crl_path, test_pki.crls["malformed"])
+    with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_file=None)) as bridge:
+        enabled = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
+        for _ in range(2):  # the second poll sees the same bytes
+            with pytest.raises(ApplyError, match="CRL"):
+                bridge.apply(enabled)
+        assert bridge.config.crl_file is None
+
+
 def test_crl_nearing_next_update_warns(test_pki, upstream, ca_bundle, crl_path, tmp_path, caplog):
-    crl_path.write_bytes(pki.crl(test_pki.ca, next_update=12 * HOUR) + pki.crl(test_pki.intermediate))
+    _use(crl_path, test_pki.crls["near_expiry"])
     with caplog.at_level(logging.WARNING, logger="mtls_bridge"):
         with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path)):
             pass
@@ -134,13 +146,11 @@ def test_crl_nearing_next_update_warns(test_pki, upstream, ca_bundle, crl_path, 
     assert "within 24 hours" in caplog.text
 
 
-def _expiring_crls(test_pki, seconds):
-    soon = datetime.timedelta(seconds=seconds)
-    return pki.crl(test_pki.ca, next_update=soon) + pki.crl(test_pki.intermediate, next_update=soon)
-
-
-def test_expired_crl_fails_closed_by_default(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_expiring_crls(test_pki, 2))
+def test_expired_crl_fails_closed_for_every_client_by_default(test_pki, upstream, ca_bundle, crl_path, tmp_path):
+    # Only the root CA's CRL expires; clients of the intermediate are refused too.
+    crl_path.write_bytes(
+        pki.crl(test_pki.ca, next_update=datetime.timedelta(seconds=2)) + pki.crl(test_pki.intermediate)
+    )
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
     with running_bridge(config) as bridge:
         assert _status(bridge, test_pki, test_pki.mapped) == 200
@@ -149,31 +159,43 @@ def test_expired_crl_fails_closed_by_default(test_pki, upstream, ca_bundle, crl_
         assert _status(bridge, test_pki, test_pki.mapped) == "handshake failed"
         assert _status(bridge, test_pki, test_pki.via_intermediate) == "handshake failed"
 
+        _use(crl_path, test_pki.crls["valid"])
+        bridge.apply(config)
+        assert _status(bridge, test_pki, test_pki.mapped) == 200
 
-def test_expired_crl_fails_open_with_a_repeated_audit_warning(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_expiring_crls(test_pki, 2))
+    events = _audit(tmp_path)
+    assert [e["policy"] for e in events if e["event"] == "crl_expired"] == ["fail_closed"]
+    assert any("fail_closed" in e["reason"] for e in events if e["event"] == "handshake_failure")
+
+
+def test_expired_crl_fails_open_and_every_audit_event_warns(test_pki, upstream, ca_bundle, crl_path, tmp_path):
+    soon = datetime.timedelta(seconds=2)
+    crl_path.write_bytes(
+        pki.crl(test_pki.ca, [test_pki.revoked.cert], next_update=soon) + pki.crl(test_pki.intermediate)
+    )
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_expiry="fail_open")
     with running_bridge(config) as bridge:
         time.sleep(2.5)  # past the CRL's nextUpdate
         bridge.apply(config)
-        bridge.apply(config)
-        assert _status(bridge, test_pki, test_pki.mapped) == 200
         # Revocation is off while the CRL is stale.
-        assert _status(bridge, test_pki, test_pki.via_intermediate) == 200
+        assert _status(bridge, test_pki, test_pki.revoked) == 200
+        assert _status(bridge, test_pki, test_pki.mapped) == 200
 
-    warnings = [e for e in _audit(tmp_path) if e["event"] == "crl_expired"]
-    assert len(warnings) == 2
-    assert warnings[0]["policy"] == "fail_open"
+    events = _audit(tmp_path)
+    assert [e["policy"] for e in events if e["event"] == "crl_expired"] == ["fail_open"]
+    calls = [e for e in events if e["event"] == "call"]
+    assert len(calls) == 2
+    assert all("fail_open" in call["warning"] for call in calls)
 
 
 def test_unreadable_crl_at_startup_is_refused(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(b"garbage")
+    _use(crl_path, test_pki.crls["malformed"])
     with pytest.raises(ValueError):
         running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path)).__enter__()
 
 
 def test_deleted_crl_file_keeps_the_previous_crl(test_pki, upstream, ca_bundle, crl_path, tmp_path, caplog):
-    crl_path.write_bytes(_leaf_crls(test_pki, revoked=[test_pki.revoked.cert]))
+    _use(crl_path, test_pki.crls["valid"])
     config = _config(test_pki, upstream, ca_bundle, crl_path, tmp_path)
     with running_bridge(config) as bridge:
         crl_path.unlink()
@@ -185,7 +207,7 @@ def test_deleted_crl_file_keeps_the_previous_crl(test_pki, upstream, ca_bundle, 
 
 
 def test_bad_crl_settings_are_refused(test_pki, upstream, ca_bundle, crl_path, tmp_path):
-    crl_path.write_bytes(_leaf_crls(test_pki))
+    _use(crl_path, test_pki.crls["valid"])
     with running_bridge(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path)) as bridge:
         with pytest.raises(ApplyError, match="leaf or chain"):
             bridge.apply(_config(test_pki, upstream, ca_bundle, crl_path, tmp_path, crl_check="deep"))

@@ -229,23 +229,23 @@ def parse(der):
     return Certificate(issuer, subject, alt_names, serial, hashlib.sha256(der).hexdigest())
 
 
-_PEM = re.compile(rb"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", re.S)
+def _pem_blocks(data, label):
+    """The decoded DER of each PEM block with ``label`` in ``data``."""
+    pattern = re.compile(b"-----BEGIN " + label + b"-----(.+?)-----END " + label + b"-----", re.S)
+    try:
+        return [base64.b64decode(b"".join(block.split()), validate=True) for block in pattern.findall(data)]
+    except ValueError:
+        raise CertificateError("invalid PEM") from None
 
 
 def load(path):
     """Parse the first certificate in a PEM or DER file."""
     with open(path, "rb") as handle:
         data = handle.read()
-    match = _PEM.search(data)
-    if match:
-        try:
-            data = base64.b64decode(b"".join(match.group(1).split()), validate=True)
-        except ValueError:
-            raise CertificateError("invalid PEM") from None
-    return parse(data)
+    blocks = _pem_blocks(data, b"CERTIFICATE")
+    return parse(blocks[0] if blocks else data)
 
 
-_PEM_CRL = re.compile(rb"-----BEGIN X509 CRL-----(.+?)-----END X509 CRL-----", re.S)
 _UTC_TIME = 0x17
 _GENERALIZED_TIME = 0x18
 
@@ -263,9 +263,11 @@ def _time(tag, content):
         raise CertificateError(f"unreadable time {text!r}") from None
 
 
-def crl_next_update(der):
-    """The nextUpdate of a DER CRL, or None if it has none. Raises CertificateError if it isn't a CRL."""
-    tag, crl, _ = _read(der, 0)
+def crl_times(der):
+    """(thisUpdate, nextUpdate or None) of one DER CRL. Raises CertificateError if it isn't a CRL."""
+    tag, crl, end = _read(der, 0)
+    if end != len(der):
+        raise CertificateError("trailing bytes after CRL")
     tag, tbs, _ = _read(_expect(tag, crl, _SEQUENCE), 0)
     fields = list(_children(_expect(tag, tbs, _SEQUENCE)))
     if fields and fields[0][0] == _INTEGER:
@@ -274,24 +276,29 @@ def crl_next_update(der):
         raise CertificateError("malformed CRL")
     _expect(*fields[0], _SEQUENCE)  # signature algorithm
     _expect(*fields[1], _SEQUENCE)  # issuer
-    _time(*fields[2])  # thisUpdate
+    this_update = _time(*fields[2])
     if len(fields) > 3 and fields[3][0] in (_UTC_TIME, _GENERALIZED_TIME):
-        return _time(*fields[3])
-    return None
+        return this_update, _time(*fields[3])
+    return this_update, None
 
 
 def load_crls(data):
-    """Split a PEM or DER CRL file into DER CRLs. Raises CertificateError if it holds none or a bad one."""
-    blocks = _PEM_CRL.findall(data)
-    if not blocks:
-        if data.lstrip().startswith(b"-----"):
+    """Split a PEM or DER CRL file (one or more CRLs) into DER CRLs.
+
+    Raises CertificateError if it holds none or a bad one.
+    """
+    if data.lstrip().startswith(b"-----"):
+        crls = _pem_blocks(data, b"X509 CRL")
+        if not crls:
             raise CertificateError("no X509 CRL blocks in the file")
-        crls = [data]
     else:
-        try:
-            crls = [base64.b64decode(b"".join(block.split()), validate=True) for block in blocks]
-        except ValueError:
-            raise CertificateError("invalid PEM") from None
+        crls, offset = [], 0
+        while offset < len(data):
+            start = offset
+            _, _, offset = _read(data, offset)
+            crls.append(data[start:offset])
+        if not crls:
+            raise CertificateError("empty CRL file")
     for der in crls:
-        crl_next_update(der)
+        crl_times(der)
     return crls
