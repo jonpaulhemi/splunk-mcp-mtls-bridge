@@ -32,11 +32,12 @@ class CA:
 _NOW = datetime.datetime.now(datetime.timezone.utc)
 
 
-def _name(cn, org="Bridge Test"):
+def _name(cn, org="Bridge Test", extra=()):
     return x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, org),
+            *extra,
             x509.NameAttribute(NameOID.COMMON_NAME, cn),
         ]
     )
@@ -52,9 +53,10 @@ def _write_key(path, key):
     )
 
 
-def make_ca(directory, cn, org="Bridge Test"):
+def make_ca(directory, cn, org="Bridge Test", extra=()):
+    """``extra`` holds NameAttributes placed between O and CN."""
     key = ec.generate_private_key(ec.SECP256R1())
-    name = _name(cn, org)
+    name = _name(cn, org, extra)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -81,7 +83,7 @@ def make_ca(directory, cn, org="Bridge Test"):
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
-    path = Path(directory) / (cn.replace(" ", "_") + ".pem")
+    path = Path(directory) / (cn.strip().replace(" ", "_") + ".pem")
     path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return CA(name=name, key=key, cert=cert, cert_path=path)
 
@@ -183,7 +185,13 @@ def build(directory):
     other_ca_client = issue(
         other_ca, directory, "other_ca_client", "agent-a", sans=[x509.UniformResourceIdentifier(MAPPED_URI)]
     )
-    escaped_ca = make_ca(directory, "Escaped CA", org=ESCAPED_ORG)
+    # A trailing space, RFC 4514 specials, and an attribute with no short name (rendered as #hex).
+    escaped_ca = make_ca(
+        directory,
+        "Escaped CA ",
+        org=ESCAPED_ORG,
+        extra=[x509.NameAttribute(NameOID.EMAIL_ADDRESS, "pki@bridge.test")],
+    )
     escaped_client = issue(
         escaped_ca,
         directory,

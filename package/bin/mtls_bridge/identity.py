@@ -21,6 +21,8 @@ _SHORT_NAMES = {
     "0.9.2342.19200300.100.1.1": "UID",
 }
 _OIDS_BY_NAME = {name: oid for oid, name in _SHORT_NAMES.items()}
+# Names other tools print for types the table lacks, accepted in pasted issuers.
+_ALIASES = {"EMAILADDRESS": "1.2.840.113549.1.9.1", "E": "1.2.840.113549.1.9.1"}
 _COMMON_NAME = "2.5.4.3"
 
 _SPECIAL = ',+"\\<>;='
@@ -30,14 +32,9 @@ _SPECIAL = ',+"\\<>;='
 class PeerIdentity:
     issuer: str  # RFC 4514, as the cert spells it
     identities: Tuple[Tuple[str, str], ...]  # (type, value) as the cert spells them
-    serial: str
+    serial: str  # uppercase hex
     sha256: str
-
-    @property
-    def keys(self) -> FrozenSet[Tuple[str, str, str]]:
-        """The mapping keys this cert satisfies."""
-        issuer = issuer_key(self.issuer)
-        return frozenset((issuer, kind, identity_key(kind, value)) for kind, value in self.identities)
+    keys: FrozenSet[Tuple[str, str, str]]  # the mapping keys this cert satisfies
 
 
 def _escape(value):
@@ -58,9 +55,12 @@ def rfc4514(rdns):
     for rdn in reversed(rdns):
         parts = []
         for attribute in rdn:
-            name = _SHORT_NAMES.get(attribute.oid, attribute.oid)
-            value = "#" + attribute.der.hex() if attribute.value is None else _escape(attribute.value)
-            parts.append(f"{name}={value}")
+            name = _SHORT_NAMES.get(attribute.oid)
+            if name is None or attribute.value is None:
+                # RFC 4514 2.4: a type without a short name takes the #hex form of its DER value.
+                parts.append(f"{name or attribute.oid}=#{attribute.der.hex()}")
+            else:
+                parts.append(f"{name}={_escape(attribute.value)}")
         rendered.append("+".join(parts))
     return ",".join(rendered)
 
@@ -121,13 +121,26 @@ def _unescape(value):
     return "".join(text for text, _ in chars)
 
 
+def _attribute_text(value):
+    """An attribute value's text, whether written as an escaped string or as #hex of a DER string."""
+    if not value.lstrip().startswith("#"):
+        # _unescape trims unescaped edge spaces only: a cert's "\ " must survive.
+        return _unescape(value)
+    hex_value = value.strip()[1:]
+    try:
+        text = certificate.string_value(bytes.fromhex(hex_value))
+    except ValueError:
+        raise ValueError(f"invalid #hex attribute value {value.strip()!r}") from None
+    return "#" + hex_value if text is None else text
+
+
 def issuer_key(issuer):
     """The canonical form of an RFC 4514 issuer string: attribute order kept, case and spacing ignored.
 
     Raises ValueError if ``issuer`` isn't a distinguished name.
     """
     rdns = []
-    for rdn in _split(issuer.strip(), ","):
+    for rdn in _split(issuer, ","):
         parts = []
         for pair in _split(rdn, "+"):
             name, equals, value = pair.partition("=")
@@ -136,14 +149,13 @@ def issuer_key(issuer):
                 raise ValueError(f"issuer must be an RFC 4514 name such as CN=My CA,O=Example; {pair.strip()!r} is not")
             if name.startswith("OID."):
                 name = name[4:]
+            name = _ALIASES.get(name, name)
             if name[:1].isdigit():
                 # Certs render types outside the table as dotted OIDs; accept those, or a table OID.
                 name = _SHORT_NAMES.get(name, name)
             elif name not in _OIDS_BY_NAME:
                 raise ValueError(f"unknown attribute type {name!r}")
-            value = value.strip()
-            text = value.lower() if value.startswith("#") else _unescape(value).lower()
-            parts.append(f"{name}={_escape(text)}")
+            parts.append(f"{name}={_escape(_attribute_text(value).lower())}")
         rdns.append("+".join(sorted(parts)))
     if not rdns or rdns == [""]:
         raise ValueError("empty issuer")
@@ -153,7 +165,7 @@ def issuer_key(issuer):
 def identity_key(identity_type, value):
     """The canonical form of an identity value of ``identity_type``. Raises ValueError if invalid."""
     if identity_type in ("DNS", "EMAIL", "UPN"):
-        return value.lower()
+        return value.strip().lower()
     if identity_type in ("URI", "CN"):
         return value
     if identity_type == "IP":
@@ -173,19 +185,21 @@ def mapping_key(issuer, identity_type, identity_value):
     return (issuer_key(issuer), identity_type, identity_key(identity_type, identity_value))
 
 
+def _row_key(row):
+    return mapping_key(row.get("issuer", ""), row.get("identity_type", ""), row.get("identity_value", ""))
+
+
 def mapping_row_problem(name, row, rows):
     """Why mapping row ``row`` can't be saved as ``name`` beside ``rows`` ({name: row}), or None if it can."""
     try:
-        key = mapping_key(row.get("issuer", ""), row.get("identity_type", ""), row.get("identity_value", ""))
+        key = _row_key(row)
     except ValueError as exc:
         return str(exc)
     for other_name, other in rows.items():
         if other_name == name:
             continue
         try:
-            other_key = mapping_key(
-                other.get("issuer", ""), other.get("identity_type", ""), other.get("identity_value", "")
-            )
+            other_key = _row_key(other)
         except ValueError:
             continue
         if other_key == key:
@@ -197,12 +211,16 @@ def mapping_row_problem(name, row, rows):
 
 
 def from_certificate(cert):
+    """Raises ValueError if the issuer can't be named by any mapping (an empty issuer)."""
     identities = list(cert.alt_names)
     for rdn in cert.subject:
         for attribute in rdn:
             if attribute.oid == _COMMON_NAME and attribute.value is not None:
                 identities.append(("CN", attribute.value))
-    return PeerIdentity(rfc4514(cert.issuer), tuple(identities), cert.serial_hex, cert.sha256)
+    issuer = rfc4514(cert.issuer)
+    canonical_issuer = issuer_key(issuer)
+    keys = frozenset((canonical_issuer, kind, identity_key(kind, value)) for kind, value in identities)
+    return PeerIdentity(issuer, tuple(identities), cert.serial_hex, cert.sha256, keys)
 
 
 def from_der(der):

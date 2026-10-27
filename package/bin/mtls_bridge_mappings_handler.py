@@ -12,6 +12,7 @@ class MappingsHandler(AdminExternalHandler):
         super().handleCreate(confInfo)
 
     def handleEdit(self, confInfo):
+        # Enabling or disabling a row changes no identity. Disabled rows still count as taken.
         if self.payload.get("disabled") is None:
             rows = self._rows()
             # An edit may send only the changed fields.

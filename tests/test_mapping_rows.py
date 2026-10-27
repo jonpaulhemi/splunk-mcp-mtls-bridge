@@ -49,7 +49,7 @@ def test_same_identity_under_another_issuer_is_allowed():
     "row, complaint",
     [
         (_row(issuer="Bridge Test CA"), "RFC 4514"),
-        (_row(issuer="CN=Bridge Test CA,EMAILADDRESS=ca@bridge.test"), "attribute type"),
+        (_row(issuer="CN=Bridge Test CA,BOGUS=x"), "attribute type"),
         (_row(identity_type="IP", identity_value="10.0.0.300"), "IP"),
         (_row(identity_type="SERIAL"), "identity type"),
     ],
@@ -63,3 +63,26 @@ def test_a_row_that_can_never_match_is_refused(row, complaint):
 def test_unreadable_existing_rows_are_ignored():
     rows = {"broken": _row(issuer="garbage")}
     assert mapping_row_problem("agent_a", _row(), rows) is None
+
+
+def test_issuer_with_an_escaped_trailing_space_is_accepted():
+    # How the bridge and inspect-cert render a CA name ending in a space.
+    assert mapping_row_problem("agent_a", _row(issuer="CN=Bridge Test CA\\ ,O=Bridge Test,C=US"), {}) is None
+
+
+def test_identity_values_with_stray_spaces_still_match():
+    rows = {"agent_dns": _row(identity_type="DNS", identity_value="agent.bridge.test")}
+    assert mapping_row_problem("new", _row(identity_type="DNS", identity_value=" Agent.Bridge.Test "), rows)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "CN=Bridge Test CA,1.2.840.113549.1.9.1=#160e6361406272696467652e74657374,O=Bridge Test",
+        "CN=Bridge Test CA,1.2.840.113549.1.9.1=ca@bridge.test,O=Bridge Test",
+        "CN=Bridge Test CA,emailAddress=CA@bridge.test,O=Bridge Test",
+    ],
+)
+def test_an_attribute_without_a_short_name_matches_in_any_common_spelling(spelling):
+    rows = {"existing": _row(issuer="CN=Bridge Test CA,E=ca@bridge.test,O=Bridge Test")}
+    assert "already" in mapping_row_problem("new", _row(issuer=spelling), rows)

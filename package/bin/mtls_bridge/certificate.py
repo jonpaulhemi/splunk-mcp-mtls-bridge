@@ -10,7 +10,7 @@ import hashlib
 import ipaddress
 import re
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 _SEQUENCE = 0x30
 _SET = 0x31
@@ -50,10 +50,10 @@ class CertificateError(ValueError):
 
 @dataclass(frozen=True)
 class Attribute:
-    """One attribute of a distinguished name. ``value`` is text, or None if not a string type."""
+    """One attribute of a distinguished name. ``value`` is None if the type isn't a string."""
 
     oid: str
-    value: object
+    value: Optional[str]
     der: bytes
 
 
@@ -106,15 +106,18 @@ def _expect(tag, content, wanted):
 def _oid(content):
     if not content:
         raise CertificateError("empty OID")
-    first = content[0]
-    arcs = [min(first // 40, 2), first - 40 * min(first // 40, 2)]
-    value = 0
-    for byte in content[1:]:
+    subidentifiers, value = [], 0
+    for byte in content:
         value = (value << 7) | (byte & 0x7F)
         if not byte & 0x80:
-            arcs.append(value)
+            subidentifiers.append(value)
             value = 0
-    return ".".join(map(str, arcs))
+    if value or not subidentifiers:
+        raise CertificateError("truncated OID")
+    # The first subidentifier packs two arcs; only the second may exceed 39, and only under arc 2.
+    first = subidentifiers[0]
+    top = min(first // 40, 2)
+    return ".".join(map(str, [top, first - 40 * top, *subidentifiers[1:]]))
 
 
 def _text(tag, content):
@@ -125,6 +128,15 @@ def _text(tag, content):
         return content.decode(codec)
     except UnicodeDecodeError:
         raise CertificateError("undecodable directory string") from None
+
+
+def string_value(der):
+    """The text of a DER-encoded directory string, or None if ``der`` is some other element."""
+    try:
+        tag, content, end = _read(der, 0)
+        return _text(tag, content) if end == len(der) else None
+    except CertificateError:
+        return None
 
 
 def _element(tag, content):
@@ -188,6 +200,8 @@ def _extensions(content):
     """Yield (oid, value) for each extension."""
     for tag, extension in _children(_expect(*_read(content, 0)[:2], _SEQUENCE)):
         parts = list(_children(_expect(tag, extension, _SEQUENCE)))
+        if len(parts) < 2:
+            raise CertificateError("malformed extension")
         oid = _oid(_expect(*parts[0], _OID))
         value = parts[-1]
         yield oid, _expect(*value, _OCTET_STRING)
