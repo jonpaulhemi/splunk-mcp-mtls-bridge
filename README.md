@@ -15,12 +15,11 @@ To build the installable app and run AppInspect, as CI does:
 
 ```sh
 .venv/bin/pip install -r requirements-build.txt
-.venv/bin/ucc-gen build --source package --ta-version 0.1.0
-.venv/bin/ucc-gen package --path output/TA-mtls-bridge -o output
-.venv/bin/splunk-appinspect inspect output/TA-mtls-bridge-0.1.0.tar.gz --output-file output/appinspect.json --data-format json
-.venv/bin/python scripts/check_appinspect.py output/appinspect.json
+PATH=.venv/bin:$PATH scripts/build_app.sh 0.1.0
 ```
 
-Install `output/TA-mtls-bridge-0.1.0.tar.gz` through Apps > Manage Apps > Install app from file, restart Splunk, then fill in the app's Configuration page.
+Install `output/TA-mtls-bridge-0.1.0.tgz` through Apps > Manage Apps > Install app from file, restart Splunk, then fill in the app's Configuration page.
+
+To release, push a tag such as `v0.2.0`. CI tests it, builds the app at version 0.2.0 and attaches `TA-mtls-bridge-0.2.0.tgz` to a GitHub release for the tag.
 
 To run the bridge outside Splunk, write a JSON file holding the `Config` fields and run `python -m mtls_bridge bridge.json` from `package/bin`.

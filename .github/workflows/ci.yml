@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
 
 jobs:
   test:
@@ -30,15 +31,9 @@ jobs:
         with:
           python-version: "3.9"
       - run: pip install -r requirements-build.txt
-      - name: Build the app
-        run: |
-          ucc-gen build --source package --ta-version "$(python -c 'import json; print(json.load(open("globalConfig.json"))["meta"]["version"])')"
-          ucc-gen package --path output/TA-mtls-bridge -o output
-      - name: AppInspect
-        run: |
-          splunk-appinspect inspect output/TA-mtls-bridge-*.tar.gz --output-file output/appinspect.json --data-format json
-          python scripts/check_appinspect.py output/appinspect.json
+      - name: Build the app and run AppInspect
+        run: scripts/build_app.sh "$(python -c 'import json; print(json.load(open("globalConfig.json"))["meta"]["version"])')"
       - uses: actions/upload-artifact@v4
         with:
           name: TA-mtls-bridge
-          path: output/TA-mtls-bridge-*.tar.gz
+          path: output/TA-mtls-bridge-*.tgz

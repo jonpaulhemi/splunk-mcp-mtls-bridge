@@ -15,7 +15,7 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, resolver, tokens
+from . import __version__, certificate, resolver, tokens
 from .audit import AuditLog, HandshakeFailures
 from .crl import CrlKeeper
 from .tokens import TokenMonitor
@@ -48,6 +48,30 @@ def listener_context(config):
     context.load_verify_locations(cafile=config.ca_bundle)
     context.load_cert_chain(config.server_cert, config.server_key, password=config.server_key_password)
     return context
+
+
+# The CA that signs the server cert every Splunk install generates for itself.
+_SPLUNK_DEFAULT_CA = {"2.5.4.3": "SplunkCommonCA", "2.5.4.10": "Splunk"}
+
+
+def _is_splunk_default_cert(path):
+    """True if the cert at ``path`` was issued by Splunk's default CA. Told by its issuer, not its path."""
+    try:
+        issuer = certificate.load(path).issuer
+    except (OSError, certificate.CertificateError):
+        return False
+    names = {attribute.oid: attribute.value for rdn in issuer for attribute in rdn}
+    return all(names.get(oid) == value for oid, value in _SPLUNK_DEFAULT_CA.items())
+
+
+def _warn_if_default_cert(config):
+    if _is_splunk_default_cert(config.server_cert):
+        log.warning(
+            "the listener is serving Splunk's default server certificate (%s), which every Splunk install "
+            "shares the CA of; install a cert from your PKI for splunkd, or set the listener cert, key and key "
+            "password on the Listener settings page",
+            config.server_cert,
+        )
 
 
 def _parse(body):
@@ -435,6 +459,8 @@ class BridgeServer:
         if live is not None and fingerprint == self._tls_fingerprint:
             return fingerprint, live.tls_context, crl_state
         context = listener_context(config)
+        if live is None or config.server_cert != live.config.server_cert:
+            _warn_if_default_cert(config)
         self._crl.load_into(context, crl_state)
         return fingerprint, context, crl_state
 
