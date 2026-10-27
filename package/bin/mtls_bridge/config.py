@@ -55,3 +55,7 @@ class Config:
     # Failed handshakes from one IP within this many seconds become one audit event.
     handshake_audit_window: float = 60.0
     mappings: List[Mapping] = field(default_factory=list)
+
+    @property
+    def listen_address(self):
+        return (self.listen_host, self.listen_port)

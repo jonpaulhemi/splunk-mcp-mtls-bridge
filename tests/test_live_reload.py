@@ -1,8 +1,12 @@
 """Applying a new config to a running bridge: in-flight requests finish on the old one."""
 
+import socket
 import threading
 
+import pytest
+
 from mtls_bridge.config import Mapping
+from mtls_bridge.server import ApplyError
 
 import pki
 from harness import Client, client_of, make_config, running_bridge, wait_for
@@ -48,3 +52,26 @@ def test_changed_port_moves_the_listener(test_pki, upstream, unused_port):
             raise AssertionError("old port still serving")
         except ConnectionRefusedError:
             pass
+
+
+def test_mapping_deletion_applies_even_when_the_listener_cannot_move(test_pki, upstream):
+    with running_bridge(make_config(test_pki, upstream)) as bridge, socket.socket() as squatter:
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen()
+        taken_port = squatter.getsockname()[1]
+        old_address = bridge.address
+
+        with pytest.raises(ApplyError, match="cannot listen"):
+            bridge.apply(make_config(test_pki, upstream, listen_port=taken_port, mappings=[]))
+
+        assert bridge.address == old_address
+        assert client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list")[0] == 403
+
+
+def test_host_change_on_the_same_port_rebinds(test_pki, upstream, unused_port):
+    config = make_config(test_pki, upstream, listen_host="0.0.0.0", listen_port=unused_port)
+    with running_bridge(config) as bridge:
+        bridge.apply(make_config(test_pki, upstream, listen_host="127.0.0.1", listen_port=unused_port))
+
+        assert bridge.address == ("127.0.0.1", unused_port)
+        assert Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc("tools/list")[0] == 200

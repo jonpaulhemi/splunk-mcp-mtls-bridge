@@ -2,6 +2,7 @@
 
 import collections
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -61,6 +62,19 @@ def _tls_fingerprint(config):
             digest.update(hashlib.sha256(handle.read()).digest())
     digest.update(repr(config.server_key_password).encode())
     return digest.hexdigest()
+
+
+class ApplyError(Exception):
+    """Part of a new config couldn't be applied; the rest was."""
+
+
+_TLS_FIELDS = ("ca_bundle", "server_cert", "server_key", "server_key_password")
+_UPSTREAM_FIELDS = ("upstream_url", "upstream_ca_bundle", "upstream_verify_hostname")
+_ADDRESS_FIELDS = ("listen_host", "listen_port")
+
+
+def _fields(config, names):
+    return {name: getattr(config, name) for name in names}
 
 
 # What one request is served with, swapped as a whole when the config changes.
@@ -287,19 +301,20 @@ class _Listener(ThreadingHTTPServer):
         super().__init__(address, _Handler)
 
     def finish_request(self, request, client_address):
-        # TLS starts here, in the worker thread, so a slow client can't stall accept(), and with the
-        # SSLContext current at accept time, so a replaced CA bundle or cert applies to new handshakes.
+        # TLS starts here, in the connection's worker thread, so a slow client can't stall accept(),
+        # and with the SSLContext current when the connection is served, so a replaced CA bundle or
+        # cert applies to new handshakes.
         live = self.bridge.live
         request.settimeout(live.config.handshake_timeout)
         tls = live.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
         try:
-            self._serve(tls, client_address, live.config)
+            self._handshake_and_handle(tls, client_address, live.config)
         finally:
             with contextlib.suppress(OSError):
                 tls.shutdown(socket.SHUT_WR)
             tls.close()
 
-    def _serve(self, tls, client_address, config):
+    def _handshake_and_handle(self, tls, client_address, config):
         try:
             tls.do_handshake()
         except (ssl.SSLError, OSError) as exc:
@@ -325,7 +340,7 @@ class BridgeServer:
         self.audit = AuditLog(config.audit_log)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self._on_token_rejected = on_token_rejected
-        self._listener = _Listener(self, (config.listen_host, config.listen_port))
+        self._listener = _Listener(self, config.listen_address)
 
     @property
     def config(self):
@@ -337,33 +352,76 @@ class BridgeServer:
 
     def start(self):
         self.handshake_failures.start()
-        self._serve(self._listener)
+        self._start_serving(self._listener)
         return self
 
     def apply(self, config):
-        """Serve ``config`` from the next request on. If it can't be used, raise and keep the current one.
+        """Serve ``config`` from the next request on. Call it from one thread only, as ``stop`` is.
 
-        A changed CA bundle, cert, key or key password rebuilds the SSLContext; a changed bind address
-        or port moves the listener. The audit file and handshake window are fixed at startup.
+        Mappings and tokens always apply, so a deleted mapping is revoked even when the rest can't be.
+        A changed CA bundle, cert, key or key password rebuilds the SSLContext for new connections
+        (open keep-alive connections keep theirs until they close); a changed bind address or port
+        moves the listener. If either fails, or the upstream settings can't be loaded, those parts
+        keep their current values and ApplyError says why. The audit file and handshake window are
+        fixed at startup.
         """
-        fingerprint = _tls_fingerprint(config)
         live = self.live
-        context = live.tls_context if fingerprint == self._tls_fingerprint else listener_context(config)
-        upstream = Upstream(config)
-        address = (config.listen_host, config.listen_port)
-        moved = address != (live.config.listen_host, live.config.listen_port)
-        listener = _Listener(self, address) if moved else None
+        problems = []
+        fingerprint, context = self._tls_fingerprint, live.tls_context
+        try:
+            new_fingerprint = _tls_fingerprint(config)
+            if new_fingerprint != fingerprint:
+                fingerprint, context = new_fingerprint, listener_context(config)
+        except (OSError, ValueError) as exc:
+            problems.append(f"listener certificate or CA bundle: {exc}")
+            config = dataclasses.replace(config, **_fields(live.config, _TLS_FIELDS))
+        try:
+            upstream = Upstream(config)
+        except (OSError, ValueError) as exc:
+            problems.append(f"MCP Server connection: {exc}")
+            config = dataclasses.replace(config, **_fields(live.config, _UPSTREAM_FIELDS))
+            upstream = live.upstream
+        listener = None
+        if config.listen_address != live.config.listen_address:
+            try:
+                listener = self._bind(config.listen_address)
+            except OSError as exc:
+                problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
+                config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
         self.live = _Live(config, context, upstream)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
-        if listener is not None:
+        if listener is not None and listener is not self._listener:
             old, self._listener = self._listener, listener
-            self._serve(listener)
+            self._start_serving(listener)
             old.shutdown()
             old.server_close()
             log.info("listener moved to %s:%s", *self.address)
+        if problems:
+            raise ApplyError("; ".join(problems))
 
-    def _serve(self, listener):
+    def _bind(self, address):
+        """A listener on ``address``. Raises OSError, leaving the current listener serving, if it can't bind.
+
+        If the port is held by the current listener (say a host change from 0.0.0.0 to 127.0.0.1 on
+        the same port), the current one closes first and comes back if the new bind fails.
+        """
+        try:
+            return _Listener(self, address)
+        except OSError:
+            current = self.live.config.listen_address
+            if address[1] != current[1] or address[1] == 0:
+                raise
+        self._listener.shutdown()
+        self._listener.server_close()
+        try:
+            return _Listener(self, address)
+        except OSError:
+            self._listener = _Listener(self, current)
+            self._start_serving(self._listener)
+            raise
+
+    def _start_serving(self, listener):
         threading.Thread(target=listener.serve_forever, args=(0.1,), name="mtls-bridge", daemon=True).start()
 
     def stop(self):

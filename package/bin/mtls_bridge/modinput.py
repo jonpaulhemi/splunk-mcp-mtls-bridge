@@ -11,13 +11,12 @@ import logging
 import logging.handlers
 import os
 import signal
-import ssl
 import threading
 import time
 import xml.etree.ElementTree as ElementTree
 
 from . import splunk_config
-from .server import BridgeServer
+from .server import ApplyError, BridgeServer
 
 log = logging.getLogger("mtls_bridge")
 
@@ -72,7 +71,7 @@ def _run(inputs, splunk_home, parent, stopping):
         log.warning("bridge not configured: %s", exc)
         return 0
     except splunk_config.SessionExpired as exc:
-        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        _session_key_rejected(exc)
         return 1
     except splunk_config.ConfigError as exc:
         log.error("bridge configuration error: %s", exc)
@@ -89,7 +88,7 @@ def _run(inputs, splunk_home, parent, stopping):
         return 1
     log.info("bridge listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))
 
-    poll = float(os.environ.get(_POLL_ENV) or _POLL_SECONDS)
+    poll = _poll_seconds()
     next_poll = time.monotonic() + poll
     status = 0
     while not stopping.wait(min(_PARENT_CHECK_SECONDS, poll)):
@@ -106,12 +105,23 @@ def _run(inputs, splunk_home, parent, stopping):
     return status
 
 
+def _poll_seconds():
+    try:
+        return max(0.1, float(os.environ.get(_POLL_ENV) or _POLL_SECONDS))
+    except ValueError:
+        return _POLL_SECONDS
+
+
+def _session_key_rejected(exc):
+    log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+
+
 def _reload(bridge, inputs, splunk_home):
     """Re-read the config and apply it. Returns False if the daemon must exit for a fresh session key."""
     try:
         config = splunk_config.load(inputs["server_uri"], inputs["session_key"], splunk_home)
     except splunk_config.SessionExpired as exc:
-        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        _session_key_rejected(exc)
         return False
     except splunk_config.ConfigError as exc:
         log.error("cannot reload the configuration (%s); keeping the last good configuration", exc)
@@ -122,8 +132,8 @@ def _reload(bridge, inputs, splunk_home):
     try:
         # Applied even when unchanged, to pick up a CA bundle or cert replaced at the same path.
         bridge.apply(config)
-    except (OSError, ssl.SSLError, ValueError) as exc:
-        log.error("cannot apply the configuration (%s); keeping the last good configuration", exc)
+    except ApplyError as exc:
+        log.error("applied the new mappings; keeping the last good configuration for the %s", exc)
         return True
     if changed:
         log.info("configuration reloaded: listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))
@@ -135,7 +145,7 @@ def _sync_audit_input(inputs):
     try:
         splunk_config.sync_audit_input(inputs["server_uri"], inputs["session_key"])
     except splunk_config.SessionExpired as exc:
-        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        _session_key_rejected(exc)
         return False
     except splunk_config.ConfigError as exc:
         # The bridge still writes the audit file; only where Splunk indexes it is stale.
