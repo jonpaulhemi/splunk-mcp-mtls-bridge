@@ -339,10 +339,10 @@ To build the installable app and run AppInspect, as CI does:
 
 ```sh
 .venv/bin/pip install -r requirements-build.txt
-PATH=.venv/bin:$PATH scripts/build_app.sh 0.1.1
+PATH=.venv/bin:$PATH scripts/build_app.sh 0.2.0
 ```
 
-This writes `output/TA-mtls-bridge-0.1.1.tgz`.
+This writes `output/TA-mtls-bridge-0.2.0.tgz`.
 
 To release, push a tag such as `v0.2.0`. CI tests it, builds the app at version 0.2.0 and attaches `TA-mtls-bridge-0.2.0.tgz` to a GitHub release for the tag.
 
