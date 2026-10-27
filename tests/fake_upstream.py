@@ -29,6 +29,7 @@ class FakeUpstream:
         self.delay = 0.0
         self.chunked = False  # send the body with chunked transfer encoding
         self.truncate = False  # promise more body than is sent, then hang up
+        self.result = None  # the JSON-RPC result to send, instead of a tools/list answer
         self._lock = threading.Lock()
         upstream = self
 
@@ -46,7 +47,7 @@ class FakeUpstream:
                 if upstream.gate is not None:
                     upstream.gate.wait(10)
                 time.sleep(upstream.delay)
-                payload = json.dumps(upstream.tools_list_result(body)).encode()
+                payload = json.dumps(upstream.answer(body)).encode()
                 self.send_response(upstream.status)
                 self.send_header("Content-Type", "application/json")
                 for name, value in upstream.headers.items():
@@ -71,13 +72,13 @@ class FakeUpstream:
         self._server.socket = context.wrap_socket(self._server.socket, server_side=True)
         self._thread = threading.Thread(target=self._server.serve_forever, args=(0.05,), daemon=True)
 
-    @staticmethod
-    def tools_list_result(body):
+    def answer(self, body):
         try:
             request_id = json.loads(body).get("id")
         except ValueError:
             request_id = None
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": [{"name": "splunk_run_query"}]}}
+        result = self.result if self.result is not None else {"tools": [{"name": "splunk_run_query"}]}
+        return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
     @property
     def url(self):

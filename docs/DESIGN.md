@@ -58,7 +58,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 - **Handshake failures:** peer IP and port and OpenSSL's reason, collapsed to one event per IP per minute with a count.
 - **Post-handshake rejections:** issuer, identity, serial, SHA-256 fingerprint and the reason.
 - **Never logged:** results or tokens.
-- **Destination:** a local file with sourcetype `mtls_bridge:audit`. The index defaults to `main` and is configurable, and index forwarding can be switched off.
+- **Destination:** one JSON line per event in `$SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log` (outside `var/log/splunk`, which goes to `_internal`), sourcetype `mtls_bridge:audit`. The index defaults to `main` and is set on the Audit page, and index forwarding can be switched off; the daemon applies both to the monitor input through splunkd's REST API, and the file is written either way.
 
 ## Clients
 
