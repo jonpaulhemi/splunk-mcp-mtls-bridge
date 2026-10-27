@@ -55,6 +55,38 @@ def rule_key(match, value):
     raise ValueError(f"unknown user rule match type {match!r}")
 
 
+def user_rule_problem(name, row, rows, role_accounts):
+    """Why user rule ``row`` can't be saved as ``name`` beside ``rows`` ({name: row}), or None if it can.
+
+    ``role_accounts`` holds the names of the role accounts that exist.
+    """
+    match = row.get("match", "")
+    try:
+        key = rule_key(match, row.get("value", ""))
+    except ValueError as exc:
+        return str(exc)
+    role_account = row.get("role_account", "")
+    if not role_account:
+        return "choose the role account this rule's users run as"
+    if role_account not in role_accounts:
+        return f"role account {role_account!r} doesn't exist; add it on the Role accounts page first"
+    for other_name, other in rows.items():
+        if other_name == name or other.get("match", "") != match:
+            continue
+        try:
+            other_key = rule_key(match, other.get("value", ""))
+        except ValueError:
+            continue
+        if other_key == key:
+            return f"user rule {other_name!r} already matches these users; each rule must match different users"
+    return None
+
+
+def rules_using(role_account, rows):
+    """The names of the user rules in ``rows`` ({name: row}) that send users to ``role_account``."""
+    return sorted(name for name, row in rows.items() if row.get("role_account") == role_account)
+
+
 def resolve(mapping, header_values, config):
     """The ProxiedUser a call from ``mapping``'s client is for, or None if the client doesn't proxy users.
 

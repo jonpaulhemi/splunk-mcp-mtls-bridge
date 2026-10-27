@@ -376,7 +376,9 @@
                                 }
                             ]
                         }
-                    ]
+                    ],
+                    "restHandlerModule": "mtls_bridge_role_accounts_handler",
+                    "restHandlerClass": "RoleAccountsHandler"
                 },
                 {
                     "name": "user_rules",
@@ -487,7 +489,9 @@
                                 "referenceName": "role_accounts"
                             }
                         }
-                    ]
+                    ],
+                    "restHandlerModule": "mtls_bridge_user_rules_handler",
+                    "restHandlerClass": "UserRulesHandler"
                 },
                 {
                     "name": "listener",
