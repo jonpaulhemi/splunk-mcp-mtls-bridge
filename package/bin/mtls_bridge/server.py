@@ -245,15 +245,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}", rpc_id)
             return
         mapping = self._mapping
-        if message.get("method") == "ping":
+        ping = message.get("method") == "ping"
+        # A proxying client's pings need no user; anyone else naming a user is refused, pings included.
+        if not (ping and mapping.proxies_users):
+            try:
+                self._user = users.resolve(mapping, self.headers.get_all(users.HEADER), self._live.config)
+            except users.UserRejection as rejection:
+                self._rejection, self._user_received = rejection.reason, rejection.received
+                self._send_rpc_error(403, _ERR_FORBIDDEN, rejection.message, rpc_id)
+                return
+        if ping:
             # Answered here so health checks don't spend the upstream's shared rate limit.
             self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
-            return
-        try:
-            self._user = users.resolve(mapping, self.headers.get_all(users.HEADER), self._live.config)
-        except users.UserRejection as rejection:
-            self._rejection, self._user_received = rejection.reason, rejection.received
-            self._send_rpc_error(403, _ERR_FORBIDDEN, rejection.message, rpc_id)
             return
         # The account and token the call runs as.
         credential = mapping if self._user is None else self._user.role_account

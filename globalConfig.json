@@ -202,6 +202,26 @@
                                     ]
                                 },
                                 {
+                                    "fieldValue": "1",
+                                    "fieldsToModify": [
+                                        {
+                                            "fieldId": "account",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token",
+                                            "display": false,
+                                            "required": false
+                                        },
+                                        {
+                                            "fieldId": "token_expiry",
+                                            "display": false,
+                                            "required": false
+                                        }
+                                    ]
+                                },
+                                {
                                     "fieldValue": "[[any_other_value]]",
                                     "fieldsToModify": [
                                         {

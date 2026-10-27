@@ -208,3 +208,25 @@ def test_flagged_mapping_needs_no_account_or_token(test_pki):
     mapping = Mapping(test_pki.ca.issuer_dn, "URI", pki.MAPPED_URI, proxies_users=True)
 
     assert (mapping.account, mapping.token, mapping.proxies_users) == ("", "", True)
+
+
+def test_client_not_proxying_users_may_not_name_one_even_in_a_ping(proxy, test_pki, upstream, audit_path):
+    client = client_of(proxy, test_pki, test_pki.mapped)
+    status, _, _ = client.rpc("ping", headers={HEADER: JOHN})
+
+    assert status == 403
+    assert _events(audit_path)[0]["reason"] == "proxied_user_not_allowed"
+
+
+def test_changed_role_accounts_apply_without_a_restart(test_pki, upstream):
+    config = _proxy_config(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        client = _proxy_client(bridge, test_pki)
+        client.rpc("tools/list", headers={HEADER: JOHN})
+        bridge.apply(dataclasses.replace(config, role_accounts=[RoleAccount("analysts", "mcp_analyst", "renewed")]))
+        client.rpc("tools/list", headers={HEADER: JOHN})
+        bridge.apply(dataclasses.replace(config, role_accounts=[]))
+        status, _, _ = client.rpc("tools/list", headers={HEADER: JOHN})
+
+    assert [r.headers["Authorization"] for r in upstream.received] == ["Bearer " + ANALYST_TOKEN, "Bearer renewed"]
+    assert status == 403
