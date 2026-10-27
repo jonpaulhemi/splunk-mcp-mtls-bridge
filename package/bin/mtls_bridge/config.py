@@ -32,4 +32,7 @@ class Config:
     # How long to wait on a quiet client between and during requests, after the handshake.
     client_timeout: float = 30.0
     upstream_timeout: float = 300.0
+    # Matches the MCP Server app's own payload cap.
+    max_body_bytes: int = 128 * 1024
+    max_concurrent_per_identity: int = 10
     mappings: List[Mapping] = field(default_factory=list)

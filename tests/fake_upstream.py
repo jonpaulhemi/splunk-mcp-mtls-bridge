@@ -3,6 +3,7 @@
 import json
 import ssl
 import threading
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -21,6 +22,11 @@ class Received:
 class FakeUpstream:
     def __init__(self, issued):
         self.received = []
+        # Knobs a test can turn to change how the upstream answers.
+        self.status = 200
+        self.headers = {}
+        self.gate = None  # a threading.Event the handler waits on before answering
+        self.delay = 0.0
         self._lock = threading.Lock()
         upstream = self
 
@@ -35,9 +41,14 @@ class FakeUpstream:
                 body = self.rfile.read(length)
                 with upstream._lock:
                     upstream.received.append(Received(self.command, self.path, dict(self.headers.items()), body))
+                if upstream.gate is not None:
+                    upstream.gate.wait(10)
+                time.sleep(upstream.delay)
                 payload = json.dumps(upstream.tools_list_result(body)).encode()
-                self.send_response(200)
+                self.send_response(upstream.status)
                 self.send_header("Content-Type", "application/json")
+                for name, value in upstream.headers.items():
+                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)

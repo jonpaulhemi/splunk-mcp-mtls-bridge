@@ -39,8 +39,8 @@ def make_config(test_pki, upstream, **overrides):
 
 
 @contextlib.contextmanager
-def running_bridge(config):
-    server = BridgeServer(config).start()
+def running_bridge(config, **kwargs):
+    server = BridgeServer(config, **kwargs).start()
     try:
         yield server
     finally:
