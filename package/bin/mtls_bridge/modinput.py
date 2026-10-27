@@ -72,6 +72,12 @@ def _run(inputs, splunk_home, parent, stopping):
         log.error("bridge configuration error: %s", exc)
         return 1
 
+    try:
+        splunk_config.sync_audit_input(inputs["server_uri"], inputs["session_key"])
+    except splunk_config.ConfigError as exc:
+        # The bridge still writes the audit file; only where Splunk indexes it is stale.
+        log.error("cannot update the audit input: %s", exc)
+
     if stopping.is_set():
         return 0
     try:

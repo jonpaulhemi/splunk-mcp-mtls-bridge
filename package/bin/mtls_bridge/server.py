@@ -5,10 +5,12 @@ import json
 import logging
 import ssl
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import resolver
+from .audit import AuditLog, HandshakeFailures
 from .upstream import Forwarded, Upstream, UpstreamTimeout, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
@@ -17,6 +19,8 @@ log = logging.getLogger(__name__)
 _TLS12_CIPHERS = "ECDHE+AESGCM:ECDHE+CHACHA20"
 
 _COPY_CHUNK = 64 * 1024
+# Tool arguments beyond this many bytes of JSON are cut from audit events.
+_AUDIT_ARGUMENT_BYTES = 4096
 
 _ERR_INVALID_REQUEST = -32600
 # Codes in JSON-RPC's implementation-defined server error range.
@@ -81,26 +85,81 @@ class _Handler(BaseHTTPRequestHandler):
         log.debug("%s %s", self.address_string(), fmt % args)
 
     def do_GET(self):
-        self._method_not_allowed()
+        self._audited(self._method_not_allowed)
 
     def do_DELETE(self):
-        self._method_not_allowed()
+        self._audited(self._method_not_allowed)
 
     def do_POST(self):
-        bridge = self.server.bridge
+        self._audited(self._post)
+
+    def _audited(self, handle):
+        """Run ``handle`` for this request, then write its one audit event."""
+        started = time.monotonic()
         # One id per request: returned to the client and sent upstream, so both sides' logs can be joined.
         self.bridge_request_id = uuid.uuid4().hex
+        self._status = None
+        self._message = None
+        self._peer = self._mapping = self._rejection = None
+        try:
+            self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
+            self._mapping = resolver.resolve(self.server.bridge.config.mappings, self._peer)
+        except resolver.Rejection as rejection:
+            self._rejection = rejection.reason
+        try:
+            handle()
+        finally:
+            self._audit(time.monotonic() - started)
+
+    def _audit(self, elapsed):
+        fields = {
+            "request_id": self.bridge_request_id,
+            "peer_ip": self.client_address[0],
+            "http_method": self.command,
+            "method": self._message.get("method") if self._message else None,
+            "status": self._status,
+        }
+        audit = self.server.bridge.audit
+        if self._rejection is not None:
+            peer = self._peer
+            if peer is not None:
+                fields.update(
+                    issuer=peer.issuer,
+                    identities=[{"type": kind, "value": value} for kind, value in peer.identities],
+                    serial=peer.serial,
+                    sha256=peer.sha256,
+                )
+            audit.write("rejection", reason=self._rejection, **fields)
+            return
+        mapping = self._mapping
+        fields.update(
+            issuer=self._peer.issuer,
+            identity_type=mapping.identity_type,
+            identity=mapping.identity_value,
+            user=mapping.account,
+            latency_ms=round(elapsed * 1000, 1),
+        )
+        params = self._message.get("params") if self._message else None
+        if fields["method"] == "tools/call" and isinstance(params, dict):
+            arguments = json.dumps(params.get("arguments"), ensure_ascii=False).encode()
+            fields.update(
+                tool=params.get("name"),
+                arguments=arguments[:_AUDIT_ARGUMENT_BYTES].decode("utf-8", "ignore"),
+                arguments_truncated=len(arguments) > _AUDIT_ARGUMENT_BYTES,
+            )
+        audit.write("call", **fields)
+
+    def _post(self):
+        bridge = self.server.bridge
         body = self._read_body(bridge.config.max_body_bytes)
         if body is None:
             return
-        message = _parse(body)
+        message = self._message = _parse(body)
         rpc_id = message.get("id") if message else None
-        try:
-            peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
-            mapping = resolver.resolve(bridge.config.mappings, peer)
-        except resolver.Rejection as rejection:
-            self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {rejection.reason}", rpc_id)
+        if self._rejection is not None:
+            self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}", rpc_id)
             return
+        mapping = self._mapping
         if message and message.get("method") == "ping":
             # Answered here so health checks don't spend the upstream's shared rate limit.
             self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
@@ -174,7 +233,6 @@ class _Handler(BaseHTTPRequestHandler):
         return self.rfile.read(int(length))
 
     def _method_not_allowed(self):
-        self.bridge_request_id = uuid.uuid4().hex
         self.close_connection = True
         self._send_rpc_error(405, _ERR_INVALID_REQUEST, "only POST is supported", headers=[("Allow", "POST")])
 
@@ -190,6 +248,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _send_headers(self, status, headers):
+        self._status = status
         self.send_response(status)
         for name, value in headers:
             self.send_header(name, value)
@@ -213,7 +272,13 @@ class _Listener(ThreadingHTTPServer):
         try:
             request.do_handshake()
         except (ssl.SSLError, OSError) as exc:
-            log.info("TLS handshake failed from %s:%s: %s", client_address[0], client_address[1], exc)
+            log.debug("TLS handshake failed from %s:%s: %s", client_address[0], client_address[1], exc)
+            reason = (
+                getattr(exc, "verify_message", None) or getattr(exc, "reason", None) or str(exc) or type(exc).__name__
+            )
+            self.bridge.handshake_failures.record(
+                client_address[0], client_address[1], getattr(exc, "verify_code", None), reason
+            )
             return
         request.settimeout(self.bridge.config.client_timeout)
         super().finish_request(request, client_address)
@@ -227,6 +292,8 @@ class BridgeServer:
         self.tls_context = listener_context(config)
         self.upstream = Upstream(config)
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
+        self.audit = AuditLog(config.audit_log)
+        self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self._on_token_rejected = on_token_rejected
         self._listener = _Listener(self)
         self._thread = threading.Thread(
@@ -238,12 +305,15 @@ class BridgeServer:
         return self._listener.server_address[:2]
 
     def start(self):
+        self.handshake_failures.start()
         self._thread.start()
         return self
 
     def stop(self):
         self._listener.shutdown()
         self._listener.server_close()
+        self.handshake_failures.stop()
+        self.audit.close()
 
     def token_rejected(self, mapping):
         log.warning("upstream rejected the token for account %s", mapping.account)

@@ -271,6 +271,34 @@
                             "help": "Check that splunkd's certificate names the MCP Server URL's host. Splunk's default certificate doesn't name 127.0.0.1."
                         }
                     ]
+                },
+                {
+                    "name": "audit",
+                    "title": "Audit",
+                    "entity": [
+                        {
+                            "type": "checkbox",
+                            "label": "Send the audit log to an index",
+                            "field": "audit_forwarding",
+                            "defaultValue": true,
+                            "help": "When off, Splunk stops indexing the audit file. The bridge still writes it to $SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log."
+                        },
+                        {
+                            "type": "text",
+                            "label": "Audit index",
+                            "field": "audit_index",
+                            "defaultValue": "main",
+                            "required": true,
+                            "help": "The index for audit events (sourcetype mtls_bridge:audit). The index must already exist.",
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                                    "errorMsg": "Index names use lowercase letters, digits, underscores and hyphens."
+                                }
+                            ]
+                        }
+                    ]
                 }
             ]
         }

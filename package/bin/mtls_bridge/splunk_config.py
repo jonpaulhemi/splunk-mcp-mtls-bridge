@@ -18,8 +18,15 @@ log = logging.getLogger(__name__)
 
 APP = "TA-mtls-bridge"
 _SETTINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_settings/listener"
+_AUDIT_SETTINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_settings/audit"
 _MAPPINGS = f"/servicesNS/nobody/{APP}/ta_mtls_bridge_mappings"
 _SERVER_SSL_CONFIG = "/services/configs/conf-server/sslConfig"
+
+# The audit file, as default/inputs.conf monitors it. Kept out of var/log/splunk, which Splunk
+# already sends to _internal.
+AUDIT_LOG = "$SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log"
+_AUDIT_INPUT = f"/servicesNS/nobody/{APP}/configs/conf-inputs/" + urllib.parse.quote("monitor://" + AUDIT_LOG, safe="")
+_MONITOR_RELOAD = f"/servicesNS/nobody/{APP}/data/inputs/monitor/_reload"
 
 # Splunk's out-of-the-box sslPassword. splunkd returns the configured one encrypted, so it's the only
 # password we can try for its key; anything else needs the listener key password override.
@@ -68,6 +75,7 @@ def load(server_uri, session_key, splunk_home):
         ca_bundle=ca_bundle,
         upstream_ca_bundle=path(settings.get("upstream_ca_bundle") or "$SPLUNK_HOME/etc/auth/cacert.pem"),
         upstream_verify_hostname=str(settings.get("upstream_verify_hostname", "0")).lower() in _TRUTHY,
+        audit_log=path(AUDIT_LOG),
         mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
     )
     # Settings left empty keep Config's defaults.
@@ -77,6 +85,30 @@ def load(server_uri, session_key, splunk_home):
     if settings.get("listen_port"):
         values["listen_port"] = _int(settings, "listen_port")
     return Config(**values)
+
+
+def sync_audit_input(server_uri, session_key):
+    """Point the audit file's monitor input at the configured index, or disable it, as the Audit page says.
+
+    The audit file is written either way. Returns True if the input changed.
+    """
+    rest = _Rest(server_uri, session_key)
+    try:
+        audit = rest.entries(_AUDIT_SETTINGS, {})[0]["content"]
+    except NotConfigured:
+        audit = {}  # the Audit page has never been saved
+    wanted = {
+        "index": audit.get("audit_index") or "main",
+        "disabled": "0" if str(audit.get("audit_forwarding", "1")).lower() in _TRUTHY else "1",
+    }
+    current = rest.entries(_AUDIT_INPUT, {})[0]["content"]
+    current_disabled = "1" if str(current.get("disabled", "0")).lower() in _TRUTHY else "0"
+    if current.get("index") == wanted["index"] and current_disabled == wanted["disabled"]:
+        return False
+    rest.post(_AUDIT_INPUT, wanted)
+    rest.post(_MONITOR_RELOAD, {})
+    log.info("audit input now %s", "disabled" if wanted["disabled"] == "1" else f"sending to index {wanted['index']}")
+    return True
 
 
 def _splunkd_server_cert(rest, path):
@@ -150,9 +182,18 @@ class _Rest:
 
     def entries(self, path, params, required=True):
         query = urllib.parse.urlencode(dict(params, output_mode="json"))
-        request = urllib.request.Request(
-            f"{self._base}{path}?{query}", headers={"Authorization": "Splunk " + self._session_key}
-        )
+        document = self._call(f"{self._base}{path}?{query}", path, required)
+        entries = document.get("entry") or []
+        if not entries and required:
+            raise NotConfigured(f"splunkd has no entries at {path}")
+        return entries
+
+    def post(self, path, fields):
+        body = urllib.parse.urlencode(dict(fields, output_mode="json")).encode()
+        self._call(f"{self._base}{path}", path, required=True, data=body)
+
+    def _call(self, url, path, required, data=None):
+        request = urllib.request.Request(url, data=data, headers={"Authorization": "Splunk " + self._session_key})
         try:
             with urllib.request.urlopen(request, context=self._context, timeout=30) as response:
                 document = json.load(response)
@@ -163,8 +204,5 @@ class _Rest:
                 raise NotConfigured(f"splunkd has nothing at {path} yet") from exc
             raise ConfigError(f"splunkd returned {exc.code} for {path}") from exc
         except (OSError, ValueError) as exc:
-            raise ConfigError(f"cannot read {path} from splunkd: {exc}") from exc
-        entries = document.get("entry") or []
-        if not entries and required:
-            raise NotConfigured(f"splunkd has no entries at {path}")
-        return entries
+            raise ConfigError(f"cannot reach {path} on splunkd: {exc}") from exc
+        return document

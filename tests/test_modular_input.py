@@ -1,5 +1,6 @@
 """The bridge as splunkd runs it: our modular input script, configured through splunkd's REST API."""
 
+import json
 import os
 import signal
 import socket
@@ -12,6 +13,7 @@ from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 import pki
+from fake_splunkd import AUDIT_INPUT_PATH, MONITOR_RELOAD_PATH
 from harness import ROOT, SESSION_KEY, Client, wait_for
 
 SCRIPT = ROOT / "package" / "bin" / "mtls_bridge_daemon.py"
@@ -207,3 +209,42 @@ def test_listener_defaults_to_splunkds_server_cert(test_pki, splunkd, splunk_hom
 
 def test_listener_serves_the_override_cert(test_pki, bridge_port, daemon):
     assert _served_cert(test_pki, bridge_port) == _der(test_pki.server.cert)
+
+
+def _audit_events(splunk_home):
+    path = splunk_home / "var" / "log" / "TA-mtls-bridge" / "audit.log"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_daemon_audits_calls_to_the_file_splunk_monitors(test_pki, splunk_home, bridge_port, daemon):
+    assert _serving(test_pki, bridge_port)
+    wait_for(lambda: _audit_events(splunk_home), timeout=5)
+    [event] = _audit_events(splunk_home)
+    assert (event["event"], event["user"], event["status"]) == ("call", "svc_agent_a", 200)
+
+
+def test_default_audit_settings_leave_the_input_alone(test_pki, splunkd, bridge_port, daemon):
+    assert _serving(test_pki, bridge_port)
+    assert splunkd.posts == []
+
+
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        ({"audit_index": "security"}, {"index": "security", "disabled": "0"}),
+        ({"audit_forwarding": "0"}, {"index": "main", "disabled": "1"}),
+    ],
+)
+def test_audit_settings_repoint_the_monitor_input(
+    test_pki, splunkd, splunk_home, bridge_port, tmp_path, settings, expected
+):
+    splunkd.content_overrides["settings_audit.json"] = settings
+    process = _start(splunkd, splunk_home, tmp_path)
+    try:
+        wait_for(lambda: _serving(test_pki, bridge_port), timeout=10)
+        assert splunkd.posts == [(AUDIT_INPUT_PATH, expected), (MONITOR_RELOAD_PATH, {})]
+        # With forwarding off the file is still written.
+        wait_for(lambda: _audit_events(splunk_home), timeout=5)
+    finally:
+        process.terminate()
+        process.wait(10)

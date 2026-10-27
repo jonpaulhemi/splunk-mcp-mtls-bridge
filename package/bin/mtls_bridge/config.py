@@ -50,4 +50,8 @@ class Config:
     # Matches the MCP Server app's own payload cap.
     max_body_bytes: int = 128 * 1024
     max_concurrent_per_identity: int = 10
+    # The audit file; None writes no audit events.
+    audit_log: Optional[str] = None
+    # Failed handshakes from one IP within this many seconds become one audit event.
+    handshake_audit_window: float = 60.0
     mappings: List[Mapping] = field(default_factory=list)
