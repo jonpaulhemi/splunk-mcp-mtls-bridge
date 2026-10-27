@@ -36,6 +36,7 @@ The bridge starts within a minute of the Listener tab getting a client CA bundle
 | Bind address, Port | Where clients connect (default `0.0.0.0:8443`). Open the port in the host firewall. |
 | Client CA bundle | A PEM file with every CA that issues client certificates. Only certs that chain to one of these are accepted. |
 | Listener certificate, key, key password | The cert clients see. Leave the certificate empty to reuse splunkd's server cert (`[sslConfig] serverCert`). Leave the key empty if the certificate file also holds the key. With no password set, the bridge also tries Splunk's default key password. |
+| Max concurrent requests per user | How many calls one [proxied user](#proxied-users) may have in flight at once (default 2). The client's own limit of 10 still applies. |
 | Client CRL file, CRL check depth, When the CRL expires | Revocation checking. See [CRL](#crl) below. |
 | MCP Server URL, CA bundle, hostname check | Where the MCP Server app listens. The defaults suit an MCP Server app on the same search head. |
 
@@ -55,6 +56,7 @@ Each row maps one client certificate to one Splunk account.
 | Name | A unique name for the row: a letter, then letters, digits or underscores. |
 | Issuer DN | The DN of the CA that issued the client cert, in RFC 4514 form, for example `CN=Example MCP Client CA,O=Example Corp`. It is matched case-insensitively. |
 | Identity type, Identity | Which certificate field identifies the client (`URI`, `DNS`, `EMAIL`, `UPN`, `IP` or `CN`) and its value. The row matches if any field of that type holds the value. DNS, email and UPN ignore case; URI and CN are exact; IP addresses match in any notation. |
+| Proxies users | Check this for a client that acts for many users and names each call's user. See [Proxied users](#proxied-users). Such a row has no Splunk account, token or expiry date. |
 | Splunk account | The local account this client acts as. |
 | MCP token | That account's encrypted MCP token from the MCP Server app. It is stored encrypted in Splunk's credential store. |
 | Token expiry date | The token's expiry date, as `YYYY-MM-DD`. |
@@ -92,6 +94,47 @@ The bridge checks each new or changed token once with an MCP `initialize`. It al
 - From 14 days before the expiry date, the bridge warns in the operational log, on `/health`, and in a daily `token_expiry` audit event.
 - Past the expiry date it keeps forwarding and keeps warning.
 
+### Proxied users
+
+Some clients act for many people through one certificate, and name the person behind each call in an `X-ProxiedEntitiesChain` header. The bridge can run each person's calls as a Splunk account that holds the roles their group should have, instead of as one account for the whole client.
+
+It takes three pieces:
+
+- **The client's mapping row** has **Proxies users** checked. It needs no account or token of its own.
+- **Role accounts** (their own tab) are local Splunk accounts, one per group of users, each with its MCP token and expiry date.
+- **User rules** (their own tab) say which role account a user's calls run as. Rules are global: they apply to every client that proxies users.
+
+**Header format.** Each call from a proxying client must name exactly one user, as a DN in RFC 4514 form, bare or in one pair of angle brackets:
+
+```
+X-ProxiedEntitiesChain: CN=John Smith,OU=Users,O=Org,C=US
+X-ProxiedEntitiesChain: <CN=John Smith,OU=Users,O=Org,C=US>
+```
+
+A chain of several DNs (`<user><proxy>`) is refused. The header is never forwarded to the MCP Server. A proxying client's `ping` and `GET /health` need no header.
+
+**User rules.** Each rule has a match type:
+
+- **Exact DN** matches one user. Case and spacing don't matter, so `cn=john smith, ou=users, o=org, c=us` matches the DN above.
+- **Attributes** matches every user whose DN holds all of the rule's attribute=value pairs, in any position and order. `OU=Analysts,O=Org` matches `CN=Jane Doe,OU=Analysts,O=Org,C=US`. If the rule repeats an attribute (`OU=Users,OU=Staff`), the DN must hold each one.
+
+An exact DN rule always wins over attribute rules. Without one, exactly one attribute rule may match: a user matching two attribute rules is refused as ambiguous, even if both point at the same role account. Keep attribute rules from overlapping, or add exact rules for the people who fall in both.
+
+The tabs refuse a rule whose value isn't a DN, a rule that duplicates another rule of the same type, a rule pointing at a role account that doesn't exist, and deleting a role account that rules still use.
+
+**Setting it up:**
+
+1. In Splunk, create a role for each group of users with the indexes and capabilities that group should have. Include whatever the MCP Server app needs for tool access, as for any mapped account.
+2. Create a local Splunk account for each group (for example `mcp_analyst`), with only that group's role.
+3. Sign in to the MCP Server app as an admin and create an encrypted MCP token for each of those accounts (see [Tokens](#mappings) above).
+4. On the **Role accounts** tab, add each account with its token and the expiry date you chose. The bridge checks each new token upstream once and watches it exactly as it does mapping tokens; `/health` lists role accounts by name.
+5. On the **User rules** tab, add rules sending users to role accounts.
+6. On the **Mappings** tab, add the client's row with **Proxies users** checked.
+
+Changes on any of these tabs apply at the next poll, with no restart.
+
+**Shared rate limit.** Splunk's MCP Server allows 240 requests a minute per Splunk account. Every user whose rule points at the same role account shares that budget, so one busy user can slow their whole group. Split large groups across several role accounts if that becomes a problem.
+
 ### Audit
 
 Every call, every rejection and every burst of failed handshakes is written as one JSON line to `$SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log`, sourcetype `mtls_bridge:audit`. Each event's `event` field is `call`, `rejection`, `handshake_failure`, `token_expiry` or `crl_expired`. Tool arguments are cut at about 4 KB. Tool results and tokens are never logged.
@@ -100,6 +143,18 @@ Every call, every rejection and every burst of failed handshakes is written as o
 | --- | --- |
 | Send the audit log to an index | Turn off to stop Splunk indexing the file. The bridge keeps writing it locally. |
 | Audit index | The index for audit events (default `main`). It must already exist. |
+
+**Proxied users in the audit log.** A proxied call's events also carry `user_dn` (the user's DN in canonical form), `user_rule` (the rule that matched) and `role_account`, and its `user` is the role account's Splunk account. A refused proxied call carries `user_dn` with the header as received (up to 4 KiB).
+
+The proxied-user rejection reasons:
+
+| `reason` | Status | Meaning |
+| --- | --- | --- |
+| `proxied_user_missing` | 403 | A client that proxies users sent no `X-ProxiedEntitiesChain`. |
+| `proxied_user_malformed` | 403 | The header isn't one DN: a chain, unbalanced brackets, empty, not a DN, or over 4 KiB. |
+| `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` included. |
+| `user_unmatched` | 403 | No user rule matches the user, or the matching rule's role account couldn't be loaded. |
+| `user_ambiguous` | 403 | The user matches no exact rule and more than one attribute rule. |
 
 ### CRL
 
@@ -258,12 +313,12 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
 ## Limits and caveats
 
 - **Custom connectors in claude.ai, Claude Desktop and Cowork can't connect.** They can't present a client certificate.
-- **Rate limit:** the MCP Server app (v2.1.0) allows 240 requests a minute per Splunk account by default. Every cert mapped to the same account shares that budget.
-- **Request size and concurrency:** request bodies are capped at 128 KiB (HTTP 413 above that), with 10 concurrent requests per mapped identity (HTTP 429 above that).
+- **Rate limit:** the MCP Server app (v2.1.0) allows 240 requests a minute per Splunk account by default. Every cert mapped to the same account, and every proxied user sent to the same role account, shares that budget.
+- **Request size and concurrency:** request bodies are capped at 128 KiB (HTTP 413 above that), with 10 concurrent requests per mapped identity and, for [proxied users](#proxied-users), 2 per user by default (HTTP 429 above either; the error message says whether it was the client's or the user's limit).
 - **Answered by the bridge:** `ping` is answered locally. A GET on `/health` from a mapped cert returns JSON with:
   - `status`: `ok`; `warning` when a token is within 14 days of its expiry date or past it; or `degraded` when a token is invalid or the CRL has expired;
   - `version`, and `crl` (`present`, `next_update`, `expired`);
-  - per mapping: `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
+  - per mapping with a token, and per role account (also with its `name`): `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
 
   It never includes tokens. Unmapped certs get 403. Other GETs, and DELETE, get HTTP 405.
 - **Other errors clients may see:** 411 for a POST without `Content-Length` (chunked request bodies aren't accepted), 502 when the MCP Server is unreachable or rejects the bridge's token, and 504 when it times out (after 300 seconds).
