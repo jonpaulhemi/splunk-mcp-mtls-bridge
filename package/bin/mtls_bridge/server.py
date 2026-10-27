@@ -3,6 +3,7 @@
 import collections
 import contextlib
 import dataclasses
+import datetime
 import hashlib
 import json
 import logging
@@ -10,12 +11,14 @@ import socket
 import ssl
 import threading
 import time
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import resolver
+from . import __version__, resolver, tokens
 from .audit import AuditLog, HandshakeFailures
 from .crl import CrlKeeper
+from .tokens import TokenMonitor
 from .upstream import Forwarded, Upstream, UpstreamTimeout, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
@@ -117,7 +120,10 @@ class _Handler(BaseHTTPRequestHandler):
         log.debug("%s %s", self.address_string(), fmt % args)
 
     def do_GET(self):
-        self._audited(self._method_not_allowed)
+        if urllib.parse.urlsplit(self.path).path == "/health":
+            self._audited(self._health)
+        else:
+            self._audited(self._method_not_allowed)
 
     def do_DELETE(self):
         self._audited(self._method_not_allowed)
@@ -154,6 +160,7 @@ class _Handler(BaseHTTPRequestHandler):
             "request_id": self.bridge_request_id,
             "peer_ip": self.client_address[0],
             "http_method": self.command,
+            "path": urllib.parse.urlsplit(self.path).path,
             "method": self._message.get("method"),
             "status": self._status,
         }
@@ -186,6 +193,12 @@ class _Handler(BaseHTTPRequestHandler):
             )
         return fields
 
+    def _health(self):
+        if self._rejection is not None:
+            self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}")
+            return
+        self._send_json(200, self.server.bridge.health())
+
     def _post(self):
         bridge = self.server.bridge
         body = self._read_body(self._live.config.max_body_bytes)
@@ -213,9 +226,11 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             with self._live.upstream.post(mapping.token, body, forwarded) as response:
                 if response.status == 401:
-                    bridge.token_rejected(mapping)
+                    bridge.tokens.rejected(mapping)
                     self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", rpc_id)
                     return
+                if 200 <= response.status < 300:
+                    bridge.tokens.accepted(mapping)
                 self._relay(response)
         except UpstreamTimeout:
             self._fail(504, "upstream MCP server timed out", rpc_id)
@@ -337,9 +352,9 @@ class _Listener(ThreadingHTTPServer):
 
 
 class BridgeServer:
-    """The bridge. ``on_token_rejected`` is called with a Mapping whose token the upstream refused."""
+    """The bridge."""
 
-    def __init__(self, config, on_token_rejected=None):
+    def __init__(self, config):
         self.audit = AuditLog(config.audit_log)
         self._crl = CrlKeeper(self.audit)
         try:
@@ -352,7 +367,8 @@ class BridgeServer:
             raise
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
-        self._on_token_rejected = on_token_rejected
+        self.tokens = TokenMonitor(self.audit)
+        self.tokens.update(config.mappings, self.live.upstream)
 
     @property
     def config(self):
@@ -399,6 +415,7 @@ class BridgeServer:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
         self.live = _Live(config, context, upstream, crl_state)
+        self.tokens.update(config.mappings, upstream)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
         if listener is not None and listener is not self._listener:
@@ -449,10 +466,41 @@ class BridgeServer:
         self._listener.shutdown()
         self._listener.server_close()
         self.handshake_failures.stop()
+        self.tokens.stop()
         self._crl.close()
         self.audit.close()
 
-    def token_rejected(self, mapping):
-        log.warning("upstream rejected the token for account %s", mapping.account)
-        if self._on_token_rejected is not None:
-            self._on_token_rejected(mapping)
+    def check_tokens(self, today=None):
+        """Warn about tokens near or past expiry, at most once a day each, and start checking upstream any
+        token not checked yet. Call it after each config load."""
+        self.tokens.warn_expiring(today or datetime.date.today())
+        self.tokens.check_new()
+
+    def health(self, today=None):
+        """What /health returns: the bridge's status, its CRL, and each mapping's token. No token values."""
+        live = self.live
+        mappings = self.tokens.report(today or datetime.date.today())
+        next_update = live.crl.next_update
+        crl_expired = bool(
+            live.crl.refuse_all
+            or live.crl.warning
+            or (next_update is not None and next_update <= datetime.datetime.now(datetime.timezone.utc))
+        )
+        if crl_expired or any(m["token_status"] == tokens.INVALID for m in mappings):
+            status = "degraded"
+        elif any(m["expiry_status"] in (tokens.EXPIRING, tokens.EXPIRED) for m in mappings):
+            status = "warning"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "version": __version__,
+            "crl": {
+                # A configured CRL is always loaded: the bridge refuses one it can't use unless it has an
+                # earlier copy to keep enforcing.
+                "present": bool(live.config.crl_file),
+                "next_update": next_update.isoformat() if next_update else None,
+                "expired": crl_expired,
+            },
+            "mappings": mappings,
+        }

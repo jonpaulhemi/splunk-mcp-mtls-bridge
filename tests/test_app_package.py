@@ -2,9 +2,10 @@
 
 import configparser
 import datetime
+import json
 import re
 
-from mtls_bridge import splunk_config
+from mtls_bridge import __version__, splunk_config
 from mtls_bridge.audit import AuditLog
 
 from harness import ROOT
@@ -40,3 +41,9 @@ def test_audit_sourcetype_parses_one_json_event_per_line(tmp_path):
     timestamp = line[match.end() :].split('"')[0]
     assert len(timestamp) <= int(stanza["MAX_TIMESTAMP_LOOKAHEAD"])
     assert datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f%z")
+
+
+def test_daemon_reports_the_app_version():
+    manifest = json.loads((ROOT / "package" / "app.manifest").read_text())
+    global_config = json.loads((ROOT / "globalConfig.json").read_text())
+    assert __version__ == manifest["info"]["id"]["version"] == global_config["meta"]["version"]

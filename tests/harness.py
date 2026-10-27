@@ -59,19 +59,24 @@ class Client:
         if issued is not None:
             self.context.load_cert_chain(str(issued.cert), str(issued.key))
 
-    def request(self, method, body=None, headers=None):
+    def request(self, method, body=None, headers=None, path="/services/mcp"):
         host, port = self.address
         conn = http.client.HTTPSConnection(host, port, context=self.context, timeout=10)
         try:
             payload = json.dumps(body).encode() if isinstance(body, dict) else body
             all_headers = {"Content-Type": "application/json"}
             all_headers.update(headers or {})
-            conn.request(method, "/services/mcp", body=payload, headers=all_headers)
+            conn.request(method, path, body=payload, headers=all_headers)
             response = conn.getresponse()
             data = response.read()
             return response.status, dict(response.getheaders()), data
         finally:
             conn.close()
+
+    def health(self):
+        """GET /health; returns (status, parsed JSON body)."""
+        status, _, data = self.request("GET", path="/health")
+        return status, json.loads(data)
 
     def rpc(self, method, request_id=1, headers=None):
         body = {"jsonrpc": "2.0", "id": request_id, "method": method}

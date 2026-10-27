@@ -339,3 +339,23 @@ def test_session_key_rejected_mid_run_makes_the_daemon_exit(test_pki, splunkd, s
 
     assert daemon.wait(POLL_SECONDS * 10) == 1
     assert "rejected the session key" in _log(splunk_home)
+
+
+def test_daemon_checks_new_tokens_at_startup_and_after_each_poll(
+    test_pki, upstream, splunkd, splunk_home, bridge_port, tmp_path
+):
+    upstream.status = 401
+    process = _start(splunkd, splunk_home, tmp_path)
+    try:
+        client = Client(("127.0.0.1", bridge_port), test_pki.ca.cert_path, test_pki.mapped)
+        _eventually(lambda: _port_open(bridge_port))
+        _eventually(lambda: client.health()[1]["mappings"][0]["token_status"] == "invalid")
+        assert {r.json()["method"] for r in upstream.received} == {"initialize"}
+
+        upstream.status = 200
+        splunkd.content_overrides["mappings.json"] = {"token": "rotated-token"}
+        _eventually(lambda: client.health()[1]["mappings"][0]["token_status"] == "ok")
+        assert "Bearer rotated-token" in {r.headers["Authorization"] for r in upstream.received}
+    finally:
+        process.terminate()
+        process.wait(10)
