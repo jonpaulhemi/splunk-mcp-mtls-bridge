@@ -1,0 +1,2 @@
+splunk-add-on-ucc-framework==6.6.0
+splunk-appinspect==4.3.1

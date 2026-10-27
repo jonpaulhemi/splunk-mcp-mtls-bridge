@@ -1,5 +1,6 @@
 """The bridge's configuration: a plain value with no Splunk dependencies."""
 
+import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -15,6 +16,7 @@ class Mapping:
     identity_value: str
     account: str
     token: str = field(repr=False)
+    token_expiry: Optional[datetime.date] = None
 
     @property
     def key(self):

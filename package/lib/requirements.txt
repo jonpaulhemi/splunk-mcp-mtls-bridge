@@ -1,0 +1,6 @@
+# Libraries for UCC's generated REST handlers (the setup pages). The bridge daemon itself uses
+# only the standard library. Pinned to versions that run on Splunk 10.4's Python 3.9 and are
+# pure Python.
+splunktaucclib==8.2.0
+solnlib==7.0.0
+splunk-sdk==2.1.1

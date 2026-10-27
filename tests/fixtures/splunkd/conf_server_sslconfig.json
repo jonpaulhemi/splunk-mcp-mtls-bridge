@@ -1,0 +1,25 @@
+{
+  "links": {},
+  "origin": "https://127.0.0.1:8089/services/configs/conf-server",
+  "updated": "2026-10-27T10:00:00+00:00",
+  "generator": {"build": "abc123", "version": "10.4.0"},
+  "entry": [
+    {
+      "name": "sslConfig",
+      "id": "https://127.0.0.1:8089/servicesNS/nobody/system/configs/conf-server/sslConfig",
+      "updated": "1970-01-01T00:00:00+00:00",
+      "links": {},
+      "author": "system",
+      "acl": {"app": "system", "owner": "system", "sharing": "system"},
+      "content": {
+        "eai:acl": null,
+        "serverCert": "$SPLUNK_HOME/etc/auth/server.pem",
+        "sslPassword": "$7$Zm9vYmFyYmF6cXV4ZW5jcnlwdGVkcGFzc3dvcmQ=",
+        "sslRootCAPath": "$SPLUNK_HOME/etc/auth/cacert.pem",
+        "sslVerifyServerCert": "false"
+      }
+    }
+  ],
+  "paging": {"total": 1, "perPage": 30, "offset": 0},
+  "messages": []
+}
