@@ -90,6 +90,7 @@ def test_listener_accepts_tls_1_2_with_a_modern_cipher(test_pki, bridge):
     assert cipher.startswith("ECDHE-")
 
 
+@pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1_1 is deprecated:DeprecationWarning")
 def test_listener_refuses_tls_1_1(test_pki, bridge):
     with pytest.raises((ssl.SSLError, ConnectionError)):
         _negotiated(

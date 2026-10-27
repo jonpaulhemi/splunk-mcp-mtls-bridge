@@ -1,0 +1,50 @@
+{
+  "links": {},
+  "origin": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_mappings",
+  "updated": "2026-10-27T10:00:00+00:00",
+  "generator": {"build": "abc123", "version": "10.4.0"},
+  "entry": [
+    {
+      "name": "agent_a",
+      "id": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_mappings/agent_a",
+      "updated": "1970-01-01T00:00:00+00:00",
+      "links": {},
+      "author": "nobody",
+      "acl": {"app": "TA-mtls-bridge", "owner": "nobody", "sharing": "app"},
+      "content": {
+        "account": "svc_agent_a",
+        "disabled": false,
+        "eai:acl": null,
+        "eai:appName": "TA-mtls-bridge",
+        "eai:userName": "nobody",
+        "identity_type": "URI",
+        "identity_value": "spiffe://bridge.test/agent-a",
+        "issuer": "CN=Bridge Test CA,O=Bridge Test,C=US",
+        "token": "eyJraWQiOiJzcGx1bmsuc2VjcmV0IiwiYWxnIjoiSFM1MTIifQ.agent-a",
+        "token_expiry": "2027-04-25"
+      }
+    },
+    {
+      "name": "agent_b",
+      "id": "https://127.0.0.1:8089/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_mappings/agent_b",
+      "updated": "1970-01-01T00:00:00+00:00",
+      "links": {},
+      "author": "nobody",
+      "acl": {"app": "TA-mtls-bridge", "owner": "nobody", "sharing": "app"},
+      "content": {
+        "account": "svc_agent_b",
+        "disabled": false,
+        "eai:acl": null,
+        "eai:appName": "TA-mtls-bridge",
+        "eai:userName": "nobody",
+        "identity_type": "DNS",
+        "identity_value": "agent-b.bridge.test",
+        "issuer": "CN=Bridge Test CA,O=Bridge Test,C=US",
+        "token": "eyJraWQiOiJzcGx1bmsuc2VjcmV0IiwiYWxnIjoiSFM1MTIifQ.agent-b",
+        "token_expiry": "2027-01-31"
+      }
+    }
+  ],
+  "paging": {"total": 2, "perPage": 0, "offset": 0},
+  "messages": []
+}

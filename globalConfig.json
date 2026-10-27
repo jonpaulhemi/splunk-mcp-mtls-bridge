@@ -1,0 +1,294 @@
+{
+    "pages": {
+        "configuration": {
+            "title": "Configuration",
+            "description": "Set up the mTLS listener and map client certificates to Splunk accounts.",
+            "tabs": [
+                {
+                    "name": "mappings",
+                    "title": "Mappings",
+                    "table": {
+                        "actions": [
+                            "edit",
+                            "delete",
+                            "clone"
+                        ],
+                        "header": [
+                            {
+                                "label": "Name",
+                                "field": "name"
+                            },
+                            {
+                                "label": "Identity type",
+                                "field": "identity_type"
+                            },
+                            {
+                                "label": "Identity",
+                                "field": "identity_value"
+                            },
+                            {
+                                "label": "Splunk account",
+                                "field": "account"
+                            },
+                            {
+                                "label": "Token expires",
+                                "field": "token_expiry"
+                            }
+                        ],
+                        "moreInfo": [
+                            {
+                                "label": "Issuer",
+                                "field": "issuer"
+                            },
+                            {
+                                "label": "Identity type",
+                                "field": "identity_type"
+                            },
+                            {
+                                "label": "Identity",
+                                "field": "identity_value"
+                            },
+                            {
+                                "label": "Splunk account",
+                                "field": "account"
+                            },
+                            {
+                                "label": "Token expires",
+                                "field": "token_expiry"
+                            }
+                        ]
+                    },
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Name",
+                            "field": "name",
+                            "help": "A unique name for this mapping.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Name must begin with a letter and contain only letters, digits and underscores.",
+                                    "pattern": "^[a-zA-Z]\\w*$"
+                                },
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Name must be 1 to 100 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 100
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Issuer DN",
+                            "field": "issuer",
+                            "help": "The issuing CA's distinguished name in RFC 4514 form, for example CN=Issuing CA,O=Example,C=US. The unmapped-certificate audit event and bin/inspect-cert show the exact value.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Issuer DN must be 1 to 1024 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 1024
+                                }
+                            ]
+                        },
+                        {
+                            "type": "singleSelect",
+                            "label": "Identity type",
+                            "field": "identity_type",
+                            "help": "Which certificate field identifies the client. A mapping matches if any field of this type holds the identity.",
+                            "required": true,
+                            "defaultValue": "URI",
+                            "options": {
+                                "disableSearch": true,
+                                "autoCompleteFields": [
+                                    {
+                                        "value": "URI",
+                                        "label": "URI (subject alternative name)"
+                                    },
+                                    {
+                                        "value": "DNS",
+                                        "label": "DNS name (subject alternative name)"
+                                    },
+                                    {
+                                        "value": "EMAIL",
+                                        "label": "Email (subject alternative name)"
+                                    },
+                                    {
+                                        "value": "UPN",
+                                        "label": "UPN (Microsoft principal name)"
+                                    },
+                                    {
+                                        "value": "IP",
+                                        "label": "IP address (subject alternative name)"
+                                    },
+                                    {
+                                        "value": "CN",
+                                        "label": "Subject common name"
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "label": "Identity",
+                            "field": "identity_value",
+                            "help": "The identity value, for example spiffe://example.org/agent or agent.example.org.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Identity must be 1 to 1024 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 1024
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Splunk account",
+                            "field": "account",
+                            "help": "The local Splunk account this client acts as. The token below must belong to it.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "string",
+                                    "errorMsg": "Account must be 1 to 256 characters.",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "MCP token",
+                            "field": "token",
+                            "help": "The account's encrypted MCP token from the Splunk MCP Server app. Stored encrypted in Splunk's credential store.",
+                            "required": true,
+                            "encrypted": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "Token expiry date",
+                            "field": "token_expiry",
+                            "help": "The date the token expires, as YYYY-MM-DD. The bridge warns 14 days ahead.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "date",
+                                    "errorMsg": "Enter the expiry date as YYYY-MM-DD."
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "listener",
+                    "title": "Listener",
+                    "entity": [
+                        {
+                            "type": "text",
+                            "label": "Bind address",
+                            "field": "listen_host",
+                            "defaultValue": "0.0.0.0",
+                            "help": "The address the mTLS listener binds to.",
+                            "required": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "Port",
+                            "field": "listen_port",
+                            "defaultValue": "8443",
+                            "help": "The port the mTLS listener binds to. Open it in the host firewall.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "number",
+                                    "range": [
+                                        1,
+                                        65535
+                                    ],
+                                    "errorMsg": "Port must be between 1 and 65535."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "Client CA bundle",
+                            "field": "ca_bundle",
+                            "help": "Path to a PEM file holding the CAs that issue client certificates. $SPLUNK_HOME is expanded.",
+                            "required": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "Listener certificate",
+                            "field": "server_cert",
+                            "help": "Path to the listener's PEM certificate. Leave empty to use splunkd's server certificate."
+                        },
+                        {
+                            "type": "text",
+                            "label": "Listener key",
+                            "field": "server_key",
+                            "help": "Path to the listener's PEM private key. Leave empty if the certificate file also holds the key."
+                        },
+                        {
+                            "type": "text",
+                            "label": "Listener key password",
+                            "field": "server_key_password",
+                            "help": "Password for the listener key, if it is encrypted.",
+                            "encrypted": true
+                        },
+                        {
+                            "type": "text",
+                            "label": "MCP Server URL",
+                            "field": "upstream_url",
+                            "defaultValue": "https://127.0.0.1:8089/services/mcp",
+                            "help": "Where the Splunk MCP Server app listens.",
+                            "required": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "pattern": "^https://",
+                                    "errorMsg": "The MCP Server URL must use https."
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "label": "MCP Server CA bundle",
+                            "field": "upstream_ca_bundle",
+                            "help": "Path to the PEM CA bundle that verifies splunkd's certificate. Leave empty for $SPLUNK_HOME/etc/auth/cacert.pem."
+                        },
+                        {
+                            "type": "checkbox",
+                            "label": "Check MCP Server hostname",
+                            "field": "upstream_verify_hostname",
+                            "help": "Check that splunkd's certificate names the MCP Server URL's host. Splunk's default certificate doesn't name 127.0.0.1."
+                        }
+                    ]
+                },
+                {
+                    "type": "loggingTab"
+                }
+            ]
+        }
+    },
+    "meta": {
+        "name": "TA-mtls-bridge",
+        "restRoot": "ta_mtls_bridge",
+        "version": "0.1.0",
+        "displayName": "mTLS Bridge for Splunk MCP",
+        "schemaVersion": "0.0.10",
+        "supportedThemes": [
+            "light",
+            "dark"
+        ],
+        "supportedPythonVersion": [
+            "3.9",
+            "3.13"
+        ],
+        "checkForUpdates": false
+    }
+}
