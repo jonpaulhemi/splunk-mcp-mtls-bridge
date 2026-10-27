@@ -4,6 +4,8 @@ import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from . import identity
+
 DEFAULT_UPSTREAM_URL = "https://127.0.0.1:8089/services/mcp"
 
 
@@ -18,10 +20,14 @@ class Mapping:
     token: str = field(repr=False)
     token_expiry: Optional[datetime.date] = None
 
+    def __post_init__(self):
+        """Raises ValueError if the issuer, type or value can't describe any certificate."""
+        object.__setattr__(self, "_key", identity.mapping_key(self.issuer, self.identity_type, self.identity_value))
+
     @property
     def key(self):
-        """The identity this mapping matches, normalised: (issuer, identity type, identity value)."""
-        return (self.issuer.lower(), self.identity_type.upper(), self.identity_value)
+        """The identity this mapping matches, canonicalised: (issuer, identity type, identity value)."""
+        return self._key
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Print a client certificate's issuer and identities exactly as a bridge mapping row expects them.
+
+Usage: $SPLUNK_HOME/bin/splunk cmd python3 $SPLUNK_HOME/etc/apps/TA-mtls-bridge/bin/inspect-cert CERT.pem
+
+Paste the Issuer line into a mapping's Issuer field, then pick one identity: its label is the
+mapping's Identity type and the rest of the line is the Identity value.
+"""
+
+import sys
+
+from mtls_bridge import certificate, identity
+
+
+def main(argv):
+    if len(argv) != 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        peer = identity.from_certificate(certificate.load(argv[1]))
+    except (OSError, certificate.CertificateError) as exc:
+        print(f"inspect-cert: cannot read {argv[1]}: {exc}", file=sys.stderr)
+        return 1
+    print(f"Issuer: {peer.issuer}")
+    print(f"Serial: {peer.serial}")
+    print(f"SHA-256: {peer.sha256}")
+    print()
+    print("Identities (type: value):")
+    for identity_type in identity.IDENTITY_TYPES:
+        for kind, value in peer.identities:
+            if kind == identity_type:
+                print(f"{kind}: {value}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

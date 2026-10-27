@@ -8,7 +8,7 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import identity, resolver
+from . import resolver
 from .upstream import Forwarded, Upstream, UpstreamTimeout, UpstreamUnavailable
 
 log = logging.getLogger(__name__)
@@ -95,8 +95,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         message = _parse(body)
         rpc_id = message.get("id") if message else None
-        peer = identity.from_peercert(self.connection.getpeercert())
         try:
+            peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
             mapping = resolver.resolve(bridge.config.mappings, peer)
         except resolver.Rejection as rejection:
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {rejection.reason}", rpc_id)

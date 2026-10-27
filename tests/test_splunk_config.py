@@ -133,3 +133,14 @@ def test_mapping_whose_token_could_not_be_decrypted_is_skipped(test_pki, splunkd
     splunkd.content_overrides["mappings.json"] = {"token": "******"}
 
     assert [m.account for m in _load(splunkd, splunk_home).mappings] == ["svc_agent_b"]
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [{"issuer": "not a distinguished name"}, {"identity_type": "IP", "identity_value": "10.0.0.300"}],
+)
+def test_mapping_that_cannot_match_any_cert_is_skipped(test_pki, splunkd, splunk_home, bad_row):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["mappings.json"] = bad_row
+
+    assert [m.account for m in _load(splunkd, splunk_home).mappings] == ["svc_agent_b"]

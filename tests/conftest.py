@@ -1,3 +1,4 @@
+import os
 import socket
 import sys
 from pathlib import Path
@@ -5,6 +6,9 @@ from pathlib import Path
 import pytest
 
 TESTS = Path(__file__).resolve().parent
+# Bytecode in package/bin would end up in a locally built app, which AppInspect refuses.
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"  # and in the daemon subprocesses
 sys.path.insert(0, str(TESTS.parent / "package" / "bin"))
 sys.path.insert(0, str(TESTS))
 
