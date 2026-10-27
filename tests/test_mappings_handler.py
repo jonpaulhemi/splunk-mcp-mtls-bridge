@@ -15,7 +15,14 @@ ISSUER = "CN=Bridge Test CA,O=Bridge Test,C=US"
 
 
 def _row(identity_value="spiffe://bridge.test/agent-a", account="svc_agent", issuer=ISSUER, identity_type="URI"):
-    return {"issuer": issuer, "identity_type": identity_type, "identity_value": identity_value, "account": account}
+    return {
+        "issuer": issuer,
+        "identity_type": identity_type,
+        "identity_value": identity_value,
+        "account": account,
+        "token": "token",
+        "token_expiry": "2027-01-31",
+    }
 
 
 class _AdminManagerException(Exception):
@@ -106,3 +113,22 @@ def test_different_identities_may_share_an_account(handler_class):
     handler = handler_class("agent_b", _row(identity_value="spiffe://bridge.test/agent-b"), {"agent_a": _row()})
     handler.handleCreate(None)
     assert handler.saved == "create"
+
+
+@pytest.mark.parametrize("missing", ["account", "token", "token_expiry"])
+def test_row_that_does_not_proxy_users_needs_an_account_and_token(handler_class, missing):
+    row = {**_row(), missing: ""}
+    assert "proxies users" in _refused(handler_class("agent_a", row, {}), lambda h: h.handleCreate)
+
+
+def test_row_that_proxies_users_needs_no_account_or_token(handler_class):
+    row = {**_row(), "account": "", "token": "", "token_expiry": "", "proxies_users": "1"}
+    handler = handler_class("agent_a", row, {})
+    handler.handleCreate(None)
+    assert handler.saved == "create"
+
+
+def test_turning_off_proxies_users_needs_an_account_and_token(handler_class):
+    stored = {"agent_a": {**_row(), "account": "", "token": "", "token_expiry": "", "proxies_users": "1"}}
+    handler = handler_class("agent_a", {"proxies_users": "0"}, stored)
+    _refused(handler, lambda h: h.handleEdit)

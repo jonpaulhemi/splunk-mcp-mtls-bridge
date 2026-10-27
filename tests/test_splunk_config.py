@@ -166,3 +166,60 @@ def test_crl_settings_become_part_of_the_config(test_pki, splunkd, splunk_home):
 
     assert config.crl_file == str(splunk_home / "etc" / "auth" / "clients.crl")
     assert (config.crl_check, config.crl_expiry) == ("chain", "fail_open")
+
+
+def test_role_accounts_and_user_rules_become_part_of_the_config(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+
+    config = _load(splunkd, splunk_home)
+
+    assert [(a.name, a.account, a.token_expiry) for a in config.role_accounts] == [
+        ("analysts", "mcp_analyst", datetime.date(2027, 3, 1)),
+        ("engineers", "mcp_engineer", datetime.date(2027, 6, 30)),
+    ]
+    assert config.role_accounts[0].token == "eyJraWQiOiJzcGx1bmsuc2VjcmV0IiwiYWxnIjoiSFM1MTIifQ.analyst"
+    assert [(r.name, r.match, r.value, r.role_account) for r in config.user_rules] == [
+        ("john", "dn", "CN=John Smith,OU=Users,O=Org,C=US", "analysts"),
+        ("jane", "dn", "CN=Jane Doe,OU=Users,O=Org,C=US", "engineers"),
+    ]
+    by_path = {path: query for path, query, _ in splunkd.requests}
+    assert by_path["/servicesNS/nobody/TA-mtls-bridge/ta_mtls_bridge_role_accounts"]["--cred--"] == ["1"]
+
+
+def test_no_role_accounts_or_user_rules_yet(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.empty.update({"role_accounts.json", "user_rules.json"})
+
+    config = _load(splunkd, splunk_home)
+
+    assert (config.role_accounts, config.user_rules) == ([], [])
+
+
+def test_mapping_that_proxies_users_loads_without_an_account_or_token(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["mappings.json"] = {
+        "proxies_users": "1",
+        "account": None,
+        "token": None,
+        "token_expiry": None,
+    }
+
+    first, second = _load(splunkd, splunk_home).mappings
+
+    assert (first.proxies_users, first.account, first.token) == (True, "", "")
+    assert second.proxies_users is False
+
+
+def test_role_account_whose_token_could_not_be_decrypted_is_skipped(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["role_accounts.json"] = {"token": "******"}
+
+    assert [a.name for a in _load(splunkd, splunk_home).role_accounts] == ["engineers"]
+
+
+@pytest.mark.parametrize("bad_rule", [{"value": "John Smith"}, {"match": "regex"}])
+def test_user_rule_that_cannot_match_any_user_is_skipped(test_pki, splunkd, splunk_home, bad_rule):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["user_rules.json"] = bad_rule
+
+    assert [r.name for r in _load(splunkd, splunk_home).user_rules] == ["jane"]

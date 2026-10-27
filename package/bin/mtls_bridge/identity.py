@@ -148,14 +148,27 @@ def issuer_key(issuer):
 
     Raises ValueError if ``issuer`` isn't a distinguished name.
     """
+    return dn_key(issuer, "issuer")
+
+
+def dn_key(text, what="DN"):
+    """The canonical form of an RFC 4514 distinguished name: attribute order kept, case and spacing ignored.
+
+    Raises ValueError, naming the value as ``what``, if ``text`` isn't a distinguished name.
+    """
+    return ",".join("+".join(rdn) for rdn in dn_rdns(text, what))
+
+
+def dn_rdns(text, what="DN"):
+    """The canonical attribute=value pairs of each RDN in ``text``, in order. Raises ValueError like dn_key."""
     rdns = []
-    for rdn in _split(issuer, ","):
+    for rdn in _split(text, ","):
         parts = []
         for pair in _split(rdn, "+"):
             name, equals, value = pair.partition("=")
             name = name.strip().upper()
             if not equals or not name:
-                raise ValueError(f"issuer must be an RFC 4514 name such as CN=My CA,O=Example; {pair.strip()!r} is not")
+                raise ValueError(f"{what} must be an RFC 4514 name such as CN=My CA,O=Example; {pair.strip()!r} is not")
             if name.startswith("OID."):
                 name = name[4:]
             name = _ALIASES.get(name, name)
@@ -165,10 +178,10 @@ def issuer_key(issuer):
             elif name not in _OIDS_BY_NAME:
                 raise ValueError(f"unknown attribute type {name!r}")
             parts.append(f"{name}={_escape(_attribute_text(value).lower())}")
-        rdns.append("+".join(sorted(parts)))
-    if not rdns or rdns == [""]:
-        raise ValueError("empty issuer")
-    return ",".join(rdns)
+        rdns.append(tuple(sorted(parts)))
+    if not rdns:
+        raise ValueError(f"empty {what}")
+    return rdns
 
 
 def identity_key(identity_type, value):

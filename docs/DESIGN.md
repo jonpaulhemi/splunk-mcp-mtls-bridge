@@ -37,6 +37,21 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 - **Revocation without a CRL:** deleting a row revokes the cert at the bridge immediately.
 - **Finding values:** the unmapped-cert audit event and the `bin/inspect-cert` script show the exact values to enter.
 
+## Proxied users
+
+Settled in the grilling for #41, which is the spec.
+
+- **Proxying clients:** a mapping can be flagged as one that proxies users. Such a mapping has no account or token. Each call names its user in `X-ProxiedEntitiesChain`, as one DN, either bare or in a single `<...>`.
+- **Role accounts:** these are local Splunk accounts holding the roles a group of users should have, each with its own token and expiry date. They live on their own page.
+- **User rules:** a rule maps a user DN to a role account. Rules are global and apply to every flagged client. DNs are compared in the same canonical RFC 4514 form as issuers. The call is forwarded with the matched role account's token, so Splunk applies that account's roles.
+- **Refusals (403, audited):**
+  - a flagged client sends no user header;
+  - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
+  - no rule matches;
+  - an unflagged client sends the header, `ping` included.
+- **Without a user:** a flagged client's `ping` and `/health` work without the header.
+- **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.
+
 ## Forwarding (upstream)
 
 - The bridge POSTs to `https://127.0.0.1:8089/services/mcp`. `initialize`, `tools/list` and `tools/call` all travel as POST.
@@ -56,9 +71,9 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 
 ## Audit logging
 
-- **Per call:** identity, issuer, mapped user, method, tool, arguments (truncated to about 4 KB), status, latency and request ID.
+- **Per call:** identity, issuer, mapped user, method, tool, arguments (truncated to about 4 KB), status, latency and request ID. A proxied call adds the user DN (canonical), the user rule and the role account, and its user is the role account's Splunk account.
 - **Handshake failures:** peer IP and port and OpenSSL's reason, collapsed to one event per IP per minute with a count.
-- **Post-handshake rejections:** issuer, identity, serial, SHA-256 fingerprint and the reason.
+- **Post-handshake rejections:** issuer, identity, serial, SHA-256 fingerprint and the reason. A refused proxied call adds the user header as received.
 - **Never logged:** results or tokens.
 - **Destination:** one JSON line per event in `$SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log` (outside `var/log/splunk`, which goes to `_internal`), sourcetype `mtls_bridge:audit`. The index defaults to `main` and is set on the Audit page, and index forwarding can be switched off; the daemon applies both to the monitor input through splunkd's REST API, and the file is written either way.
 
