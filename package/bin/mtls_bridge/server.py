@@ -197,7 +197,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._rejection is not None:
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}")
             return
-        self._send_json(200, self.server.bridge.health(live=self._live))
+        self._send_json(200, self.server.bridge.health())
 
     def _post(self):
         bridge = self.server.bridge
@@ -226,7 +226,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             with self._live.upstream.post(mapping.token, body, forwarded) as response:
                 if response.status == 401:
-                    bridge.token_rejected(mapping)
+                    bridge.tokens.rejected(mapping)
                     self._send_rpc_error(502, _ERR_CREDENTIAL, "bridge credential invalid", rpc_id)
                     return
                 if 200 <= response.status < 300:
@@ -368,6 +368,7 @@ class BridgeServer:
         self.limiter = _ConcurrencyLimiter(config.max_concurrent_per_identity)
         self.handshake_failures = HandshakeFailures(self.audit, config.handshake_audit_window)
         self.tokens = TokenMonitor(self.audit)
+        self.tokens.update(config.mappings, self.live.upstream)
 
     @property
     def config(self):
@@ -414,6 +415,7 @@ class BridgeServer:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
         self.live = _Live(config, context, upstream, crl_state)
+        self.tokens.update(config.mappings, upstream)
         self._tls_fingerprint = fingerprint
         self.limiter.limit = config.max_concurrent_per_identity
         if listener is not None and listener is not self._listener:
@@ -464,49 +466,38 @@ class BridgeServer:
         self._listener.shutdown()
         self._listener.server_close()
         self.handshake_failures.stop()
+        self.tokens.stop()
         self._crl.close()
         self.audit.close()
 
-    def token_rejected(self, mapping):
-        log.warning("upstream rejected the token for account %s", mapping.account)
-        self.tokens.rejected(mapping)
-
     def check_tokens(self, today=None):
-        """Warn about tokens near or past expiry, at most once a day each, and check tokens new since the
-        last call upstream, in the background. Call it after each config load."""
-        live = self.live
-        self.tokens.check(live.config.mappings, live.upstream, today or datetime.date.today())
+        """Warn about tokens near or past expiry, at most once a day each, and start checking upstream any
+        token not checked yet. Call it after each config load."""
+        self.tokens.warn_expiring(today or datetime.date.today())
+        self.tokens.check_new()
 
-    def tokens_checking(self):
-        """True while a background token check is running."""
-        return self.tokens.checking()
-
-    def health(self, live=None, today=None):
+    def health(self, today=None):
         """What /health returns: the bridge's status, its CRL, and each mapping's token. No token values."""
-        live = live or self.live
-        today = today or datetime.date.today()
-        mappings = [
-            {
-                "account": m.account,
-                "token_expiry": m.token_expiry.isoformat() if m.token_expiry else None,
-                "days_remaining": tokens.days_remaining(m, today),
-                "expiry_status": tokens.expiry_status(m, today),
-                "token_status": self.tokens.status(m),
-            }
-            for m in live.config.mappings
-        ]
-        crl_expired = bool(live.crl.refuse_all or live.crl.warning)
+        live = self.live
+        mappings = self.tokens.report(today or datetime.date.today())
+        next_update = live.crl.next_update
+        crl_expired = bool(
+            live.crl.refuse_all
+            or live.crl.warning
+            or (next_update is not None and next_update <= datetime.datetime.now(datetime.timezone.utc))
+        )
         if crl_expired or any(m["token_status"] == tokens.INVALID for m in mappings):
             status = "degraded"
-        elif any(m["expiry_status"] in ("expiring", "expired") for m in mappings):
+        elif any(m["expiry_status"] in (tokens.EXPIRING, tokens.EXPIRED) for m in mappings):
             status = "warning"
         else:
             status = "ok"
-        next_update = live.crl.next_update
         return {
             "status": status,
             "version": __version__,
             "crl": {
+                # A configured CRL is always loaded: the bridge refuses one it can't use unless it has an
+                # earlier copy to keep enforcing.
                 "present": bool(live.config.crl_file),
                 "next_update": next_update.isoformat() if next_update else None,
                 "expired": crl_expired,

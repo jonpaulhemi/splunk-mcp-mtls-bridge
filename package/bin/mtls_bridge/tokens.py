@@ -17,10 +17,16 @@ log = logging.getLogger(__name__)
 
 EXPIRY_WARNING_DAYS = 14
 
+# Token statuses.
 OK = "ok"  # the upstream accepted the token
 INVALID = "invalid"  # the upstream answered 401
 UNCHECKED = "unchecked"  # not checked yet, or the upstream couldn't be reached
 UNVERIFIED = "unverified"  # the upstream answered the check with neither success nor 401
+
+# Expiry statuses.
+EXPIRY_OK = "ok"
+EXPIRING = "expiring"  # within EXPIRY_WARNING_DAYS of the expiry date
+EXPIRED = "expired"
 
 # The MCP revision the check's initialize offers; any answer but 401 says the token got through.
 _PROTOCOL_VERSION = "2025-06-18"
@@ -32,16 +38,18 @@ def _token_id(mapping):
 
 
 def days_remaining(mapping, today):
+    """Days from ``today`` to the mapping's token expiry date (negative once past it), or None."""
     return None if mapping.token_expiry is None else (mapping.token_expiry - today).days
 
 
 def expiry_status(mapping, today):
+    """EXPIRY_OK, EXPIRING or EXPIRED, or None if the mapping has no expiry date."""
     days = days_remaining(mapping, today)
     if days is None:
         return None
     if days < 0:
-        return "expired"
-    return "expiring" if days <= EXPIRY_WARNING_DAYS else "ok"
+        return EXPIRED
+    return EXPIRING if days <= EXPIRY_WARNING_DAYS else EXPIRY_OK
 
 
 def _check_body():
@@ -60,60 +68,106 @@ def _check_body():
 
 
 class TokenMonitor:
+    """Holds the token status and expiry warnings of the current mappings.
+
+    ``update`` sets the current mappings; results for tokens no longer among them are dropped.
+    """
+
     def __init__(self, audit):
         self._audit = audit
+        self._mappings = []
+        self._upstream = None
         self._status = {}  # token id -> OK, INVALID or UNVERIFIED
-        self._warned = {}  # token id -> the day its last expiry warning went out
+        self._warned = {}  # mapping key -> the day its last expiry warning went out
         self._lock = threading.Lock()
-        self._checker = None
+        self._checker = None  # the background check, while one runs
+        self._stopping = threading.Event()
+
+    def update(self, mappings, upstream):
+        current = {_token_id(m) for m in mappings}
+        keys = {m.key for m in mappings}
+        with self._lock:
+            self._mappings, self._upstream = list(mappings), upstream
+            self._status = {token: status for token, status in self._status.items() if token in current}
+            self._warned = {key: day for key, day in self._warned.items() if key in keys}
 
     def status(self, mapping):
         with self._lock:
             return self._status.get(_token_id(mapping), UNCHECKED)
 
     def accepted(self, mapping):
+        """A forwarded call with ``mapping``'s token succeeded."""
         self._set(mapping, OK)
 
     def rejected(self, mapping):
+        """The upstream answered a forwarded call with ``mapping``'s token with 401."""
+        log.warning("upstream rejected the token for account %s", mapping.account)
         self._set(mapping, INVALID)
 
     def checking(self):
         """True while new tokens are being checked upstream."""
-        return self._checker is not None and self._checker.is_alive()
-
-    def check(self, mappings, upstream, today):
-        """Warn about tokens near or past expiry, at most once a day each, and check new tokens upstream
-        in the background."""
-        current = {_token_id(m) for m in mappings}
         with self._lock:
-            for table in (self._status, self._warned):
-                for gone in set(table) - current:
-                    del table[gone]
-            new = [m for m in mappings if _token_id(m) not in self._status]
+            return self._checker is not None
+
+    def warn_expiring(self, today):
+        """Warn about each token near or past its expiry date, at most once a day per mapping."""
+        with self._lock:
+            mappings = self._mappings
         for mapping in mappings:
             self._warn_expiry(mapping, today)
-        if new and not self.checking():
-            self._checker = threading.Thread(
-                target=self._check_upstream, args=(new, upstream), name="mtls-bridge-token-check", daemon=True
-            )
+
+    def check_new(self):
+        """Check each token not checked yet upstream, in the background."""
+        with self._lock:
+            if self._checker is not None or self._stopping.is_set():
+                return
+            if all(_token_id(m) in self._status for m in self._mappings):
+                return
+            self._checker = threading.Thread(target=self._check_upstream, name="mtls-bridge-token-check", daemon=True)
             self._checker.start()
 
-    def _set(self, mapping, status):
+    def report(self, today):
+        """Each current mapping's account, expiry and token status, for /health."""
         with self._lock:
-            self._status[_token_id(mapping)] = status
+            mappings = self._mappings
+        return [
+            {
+                "account": m.account,
+                "token_expiry": m.token_expiry.isoformat() if m.token_expiry else None,
+                "days_remaining": days_remaining(m, today),
+                "expiry_status": expiry_status(m, today),
+                "token_status": self.status(m),
+            }
+            for m in mappings
+        ]
+
+    def stop(self):
+        self._stopping.set()
+        with self._lock:
+            checker = self._checker
+        if checker is not None:
+            checker.join(1.0)
+
+    def _set(self, mapping, status, only_if_unchecked=False):
+        token = _token_id(mapping)
+        with self._lock:
+            if token not in {_token_id(m) for m in self._mappings}:
+                return  # a request or check that outlived its mapping
+            if only_if_unchecked and token in self._status:
+                return  # a forwarded call answered while the check was in flight, and is newer
+            self._status[token] = status
 
     def _warn_expiry(self, mapping, today):
         status = expiry_status(mapping, today)
-        if status not in ("expiring", "expired"):
+        if status not in (EXPIRING, EXPIRED):
             return
-        token_id = _token_id(mapping)
         with self._lock:
-            if self._warned.get(token_id) == today:
+            if self._warned.get(mapping.key) == today:
                 return
-            self._warned[token_id] = today
+            self._warned[mapping.key] = today
         days = days_remaining(mapping, today)
         expiry = mapping.token_expiry.isoformat()
-        if status == "expired":
+        if status == EXPIRED:
             log.warning("the token for account %s expired on %s; replace it", mapping.account, expiry)
         else:
             log.warning("the token for account %s expires on %s, in %d days; replace it", mapping.account, expiry, days)
@@ -128,12 +182,28 @@ class TokenMonitor:
             status=status,
         )
 
-    def _check_upstream(self, mappings, upstream):
+    def _next_unchecked(self, tried):
+        """The next current mapping whose token is unchecked and not yet tried, and the upstream to try
+        it on; or (None, None), which ends the check."""
+        with self._lock:
+            for mapping in self._mappings:
+                token = _token_id(mapping)
+                if token not in self._status and token not in tried:
+                    return mapping, self._upstream
+            self._checker = None
+            return None, None
+
+    def _check_upstream(self):
         body = _check_body()
-        for mapping in mappings:
-            forwarded = Forwarded(None, uuid.uuid4().hex, {})
+        tried = set()
+        # Picks up tokens that arrive while it runs, so a rotation mid-check is checked promptly.
+        while not self._stopping.is_set():
+            mapping, upstream = self._next_unchecked(tried)
+            if mapping is None:
+                return
+            tried.add(_token_id(mapping))
             try:
-                with upstream.post(mapping.token, body, forwarded) as response:
+                with upstream.post(mapping.token, body, Forwarded(None, uuid.uuid4().hex, {})) as response:
                     code = response.status
             except (UpstreamUnavailable, UpstreamTimeout) as exc:
                 # Left unchecked, so the next config poll tries again.
@@ -141,11 +211,14 @@ class TokenMonitor:
                 continue
             if code == 401:
                 log.warning("the MCP Server rejected the token for account %s", mapping.account)
-                self._set(mapping, INVALID)
+                status = INVALID
             elif 200 <= code < 300:
-                self._set(mapping, OK)
+                status = OK
             else:
                 log.warning(
                     "the MCP Server answered the token check for account %s with HTTP %s", mapping.account, code
                 )
-                self._set(mapping, UNVERIFIED)
+                status = UNVERIFIED
+            self._set(mapping, status, only_if_unchecked=True)
+        with self._lock:
+            self._checker = None

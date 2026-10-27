@@ -4,6 +4,8 @@ import dataclasses
 import datetime
 import json
 import logging
+import threading
+import time
 
 from mtls_bridge import __version__
 from mtls_bridge.config import Mapping
@@ -11,6 +13,7 @@ from mtls_bridge.config import Mapping
 import pki
 from harness import MAPPED_TOKEN, client_of, make_config, running_bridge, wait_for
 
+# Fixed at import: a run that crosses midnight can fail the days-remaining checks.
 TODAY = datetime.date.today()
 
 
@@ -114,7 +117,7 @@ def test_token_check_is_retried_when_the_upstream_was_unreachable(test_pki, upst
     config = make_config(test_pki, upstream, upstream_url=f"https://127.0.0.1:{unused_port}/services/mcp")
     with running_bridge(config) as bridge:
         bridge.check_tokens()
-        wait_for(lambda: not bridge.tokens_checking())
+        wait_for(lambda: not bridge.tokens.checking())
         assert bridge.health()["mappings"][0]["token_status"] == "unchecked"
         bridge.apply(make_config(test_pki, upstream))
         bridge.check_tokens()
@@ -200,3 +203,47 @@ def test_other_gets_are_still_refused(test_pki, upstream):
         status, _, _ = client_of(bridge, test_pki, test_pki.mapped).request("GET", path="/services/mcp")
 
     assert status == 405
+
+
+def test_token_rotated_during_a_check_is_checked_when_it_finishes(test_pki, upstream):
+    upstream.gate = threading.Event()
+    with running_bridge(make_config(test_pki, upstream)) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: len(_initializes(upstream)) == 1)
+        rotated = dataclasses.replace(make_config(test_pki, upstream).mappings[0], token="rotated-token")
+        bridge.apply(make_config(test_pki, upstream, mappings=[rotated]))
+        bridge.check_tokens()  # the first check is still running
+        upstream.gate.set()
+        wait_for(lambda: bridge.health()["mappings"][0]["token_status"] == "ok")
+
+    assert [r.headers["Authorization"] for r in _initializes(upstream)] == [
+        "Bearer " + MAPPED_TOKEN,
+        "Bearer rotated-token",
+    ]
+
+
+def test_a_401_seen_during_the_check_outranks_the_checks_answer(test_pki, upstream):
+    upstream.gate = threading.Event()
+    config = make_config(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: len(_initializes(upstream)) == 1)
+        bridge.tokens.rejected(config.mappings[0])  # as a forwarded call answered 401 would
+        upstream.gate.set()
+        wait_for(lambda: not bridge.tokens.checking())
+        assert bridge.health()["mappings"][0]["token_status"] == "invalid"
+
+
+def test_health_shows_a_crl_expiring_between_polls(test_pki, upstream, tmp_path):
+    soon = datetime.timedelta(seconds=2)
+    crl_file = tmp_path / "soon.pem"
+    crl_file.write_bytes(pki.crl(test_pki.ca, next_update=soon) + pki.crl(test_pki.intermediate, next_update=soon))
+    with running_bridge(make_config(test_pki, upstream, crl_file=str(crl_file))) as bridge:
+        assert bridge.health()["crl"]["expired"] is False
+        time.sleep(2.5)
+        # Until the next poll applies the expiry policy, OpenSSL itself refuses handshakes against the
+        # expired CRL, so only the bridge's own view of /health is reachable.
+        health = bridge.health()
+
+    assert health["crl"]["expired"] is True
+    assert health["status"] == "degraded"
