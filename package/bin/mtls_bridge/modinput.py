@@ -74,6 +74,9 @@ def _run(inputs, splunk_home, parent, stopping):
 
     try:
         splunk_config.sync_audit_input(inputs["server_uri"], inputs["session_key"])
+    except splunk_config.SessionExpired as exc:
+        log.error("splunkd rejected the session key; exiting so splunkd restarts the bridge: %s", exc)
+        return 1
     except splunk_config.ConfigError as exc:
         # The bridge still writes the audit file; only where Splunk indexes it is stale.
         log.error("cannot update the audit input: %s", exc)

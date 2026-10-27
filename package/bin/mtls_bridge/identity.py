@@ -36,6 +36,15 @@ class PeerIdentity:
     sha256: str
     keys: FrozenSet[Tuple[str, str, str]]  # the mapping keys this cert satisfies
 
+    def describe(self):
+        """The cert's details as audit events carry them, in the form a mapping row takes."""
+        return {
+            "issuer": self.issuer,
+            "identities": [{"type": kind, "value": value} for kind, value in self.identities],
+            "serial": self.serial,
+            "sha256": self.sha256,
+        }
+
 
 def _escape(value):
     out = []

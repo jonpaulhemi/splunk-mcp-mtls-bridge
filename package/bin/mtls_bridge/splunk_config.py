@@ -36,6 +36,13 @@ _SPLUNK_DEFAULT_KEY_PASSWORD = "password"
 _TRUTHY = {"1", "true", "yes", "t", "y"}
 
 
+def _flag(value, default):
+    """A checkbox or boolean conf value; ``default`` when it's missing or empty."""
+    if value is None or value == "":
+        return default
+    return str(value).lower() in _TRUTHY
+
+
 class ConfigError(Exception):
     """The configuration can't be used."""
 
@@ -74,7 +81,7 @@ def load(server_uri, session_key, splunk_home):
         server_key_password=password,
         ca_bundle=ca_bundle,
         upstream_ca_bundle=path(settings.get("upstream_ca_bundle") or "$SPLUNK_HOME/etc/auth/cacert.pem"),
-        upstream_verify_hostname=str(settings.get("upstream_verify_hostname", "0")).lower() in _TRUTHY,
+        upstream_verify_hostname=_flag(settings.get("upstream_verify_hostname"), False),
         audit_log=path(AUDIT_LOG),
         mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
     )
@@ -99,14 +106,14 @@ def sync_audit_input(server_uri, session_key):
         audit = {}  # the Audit page has never been saved
     wanted = {
         "index": audit.get("audit_index") or "main",
-        "disabled": "0" if str(audit.get("audit_forwarding", "1")).lower() in _TRUTHY else "1",
+        "disabled": "0" if _flag(audit.get("audit_forwarding"), True) else "1",
     }
     current = rest.entries(_AUDIT_INPUT, {})[0]["content"]
-    current_disabled = "1" if str(current.get("disabled", "0")).lower() in _TRUTHY else "0"
+    current_disabled = "1" if _flag(current.get("disabled"), False) else "0"
     if current.get("index") == wanted["index"] and current_disabled == wanted["disabled"]:
         return False
     rest.post(_AUDIT_INPUT, wanted)
-    rest.post(_MONITOR_RELOAD, {})
+    rest.entries(_MONITOR_RELOAD, {}, required=False)
     log.info("audit input now %s", "disabled" if wanted["disabled"] == "1" else f"sending to index {wanted['index']}")
     return True
 

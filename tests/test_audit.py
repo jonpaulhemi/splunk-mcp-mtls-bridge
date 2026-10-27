@@ -1,5 +1,7 @@
 """Every call and every rejection leaves one JSON event in the audit file; secrets and results never do."""
 
+import datetime
+import http.client
 import json
 import ssl
 import subprocess
@@ -10,7 +12,7 @@ import pytest
 from mtls_bridge.config import Mapping
 
 import pki
-from harness import MAPPED_TOKEN, ROOT, Client, client_of, make_config, running_bridge
+from harness import MAPPED_TOKEN, ROOT, Client, client_of, make_config, running_bridge, wait_for
 
 RESULT_MARKER = "result-text-that-must-not-be-audited"
 
@@ -136,3 +138,34 @@ def test_failed_handshakes_from_one_ip_collapse_into_one_event(test_pki, upstrea
     assert event["verify_code"] is not None
     assert event["reason"]
     assert event["time"]
+
+
+def test_failures_after_the_window_start_a_new_event_timestamped_at_its_first_failure(test_pki, upstream, audit_path):
+    config = make_config(test_pki, upstream, audit_log=str(audit_path), handshake_audit_window=0.5)
+    with running_bridge(config) as bridge:
+        stranger = Client(bridge.address, test_pki.ca.cert_path, test_pki.other_ca_client)
+        for _ in range(2):
+            with pytest.raises((ssl.SSLError, ConnectionError, OSError)):
+                stranger.rpc("tools/list")
+        wait_for(lambda: audit_path.exists() and audit_path.read_text(), timeout=5)
+        written = datetime.datetime.now(datetime.timezone.utc)
+        with pytest.raises((ssl.SSLError, ConnectionError, OSError)):
+            stranger.rpc("tools/list")
+
+    first, second = _events(audit_path)
+    assert (first["count"], second["count"]) == (2, 1)
+    assert datetime.datetime.fromisoformat(first["time"]) < written
+    assert datetime.datetime.fromisoformat(second["time"]) >= written - datetime.timedelta(milliseconds=1)
+
+
+def test_response_cut_short_after_its_headers_is_audited_as_aborted(test_pki, upstream, audit_path):
+    upstream.truncate = True
+    config = make_config(test_pki, upstream, audit_log=str(audit_path))
+    with running_bridge(config) as bridge:
+        with pytest.raises((http.client.HTTPException, OSError, ValueError)):
+            client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list")
+        wait_for(lambda: audit_path.exists() and audit_path.read_text(), timeout=5)
+
+    [event] = _events(audit_path)
+    assert event["status"] == 200
+    assert event["aborted"] == "upstream MCP server unavailable"

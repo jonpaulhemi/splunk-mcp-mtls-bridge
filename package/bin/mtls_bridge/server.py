@@ -99,68 +99,69 @@ class _Handler(BaseHTTPRequestHandler):
         # One id per request: returned to the client and sent upstream, so both sides' logs can be joined.
         self.bridge_request_id = uuid.uuid4().hex
         self._status = None
-        self._message = None
+        self._aborted = None  # why the response was cut short after its headers went out
+        self._message = {}
         self._peer = self._mapping = self._rejection = None
         try:
-            self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
-            self._mapping = resolver.resolve(self.server.bridge.config.mappings, self._peer)
-        except resolver.Rejection as rejection:
-            self._rejection = rejection.reason
-        try:
+            try:
+                self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
+                self._mapping = resolver.resolve(self.server.bridge.config.mappings, self._peer)
+            except resolver.Rejection as rejection:
+                self._rejection = rejection.reason
             handle()
         finally:
-            self._audit(time.monotonic() - started)
+            try:
+                self._audit(time.monotonic() - started)
+            except Exception:
+                log.exception("cannot write audit event for request %s", self.bridge_request_id)
 
     def _audit(self, elapsed):
         fields = {
             "request_id": self.bridge_request_id,
             "peer_ip": self.client_address[0],
             "http_method": self.command,
-            "method": self._message.get("method") if self._message else None,
+            "method": self._message.get("method"),
             "status": self._status,
         }
+        if self._aborted:
+            fields["aborted"] = self._aborted
         audit = self.server.bridge.audit
         if self._rejection is not None:
-            peer = self._peer
-            if peer is not None:
-                fields.update(
-                    issuer=peer.issuer,
-                    identities=[{"type": kind, "value": value} for kind, value in peer.identities],
-                    serial=peer.serial,
-                    sha256=peer.sha256,
-                )
-            audit.write("rejection", reason=self._rejection, **fields)
-            return
+            audit.write("rejection", reason=self._rejection, **fields, **(self._peer.describe() if self._peer else {}))
+        elif self._mapping is not None:
+            audit.write("call", **fields, **self._call_fields(elapsed))
+
+    def _call_fields(self, elapsed):
         mapping = self._mapping
-        fields.update(
+        fields = dict(
             issuer=self._peer.issuer,
             identity_type=mapping.identity_type,
             identity=mapping.identity_value,
             user=mapping.account,
             latency_ms=round(elapsed * 1000, 1),
         )
-        params = self._message.get("params") if self._message else None
-        if fields["method"] == "tools/call" and isinstance(params, dict):
+        params = self._message.get("params")
+        if self._message.get("method") == "tools/call" and isinstance(params, dict):
             arguments = json.dumps(params.get("arguments"), ensure_ascii=False).encode()
             fields.update(
                 tool=params.get("name"),
                 arguments=arguments[:_AUDIT_ARGUMENT_BYTES].decode("utf-8", "ignore"),
                 arguments_truncated=len(arguments) > _AUDIT_ARGUMENT_BYTES,
             )
-        audit.write("call", **fields)
+        return fields
 
     def _post(self):
         bridge = self.server.bridge
         body = self._read_body(bridge.config.max_body_bytes)
         if body is None:
             return
-        message = self._message = _parse(body)
-        rpc_id = message.get("id") if message else None
+        message = self._message = _parse(body) or {}
+        rpc_id = message.get("id")
         if self._rejection is not None:
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}", rpc_id)
             return
         mapping = self._mapping
-        if message and message.get("method") == "ping":
+        if message.get("method") == "ping":
             # Answered here so health checks don't spend the upstream's shared rate limit.
             self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
             return
@@ -188,11 +189,13 @@ class _Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             # The client went away or stalled mid-response.
             log.debug("client connection failed: %s", exc)
+            self._aborted = "client connection failed"
             self.close_connection = True
 
     def _fail(self, status, message, rpc_id):
         if self._headers_sent:
             # Too late for an error response: cut the connection so the client sees a truncated body.
+            self._aborted = message
             self.close_connection = True
         else:
             self._send_rpc_error(status, _ERR_UPSTREAM, message, rpc_id)

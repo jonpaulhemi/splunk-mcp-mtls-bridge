@@ -7,14 +7,12 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from mtls_bridge.splunk_config import AUDIT_LOG
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "splunkd"
 
 APP_PATH = "/servicesNS/nobody/TA-mtls-bridge"
-AUDIT_INPUT_PATH = (
-    APP_PATH
-    + "/configs/conf-inputs/"
-    + urllib.parse.quote("monitor://$SPLUNK_HOME/var/log/TA-mtls-bridge/audit.log", safe="")
-)
+AUDIT_INPUT_PATH = APP_PATH + "/configs/conf-inputs/" + urllib.parse.quote("monitor://" + AUDIT_LOG, safe="")
 MONITOR_RELOAD_PATH = APP_PATH + "/data/inputs/monitor/_reload"
 ROUTES = {
     APP_PATH + "/ta_mtls_bridge_settings/listener": "settings_listener.json",
@@ -31,6 +29,7 @@ class FakeSplunkd:
         self.requests = []
         # (path, form fields) of each POST, in order.
         self.posts = []
+        self.reloads = 0  # GETs of the monitor inputs' _reload endpoint
         # Edits tests make to a fixture's first entry content, by fixture file name.
         self.content_overrides = {}
         # Fixture file names to serve with no entries.
@@ -49,6 +48,9 @@ class FakeSplunkd:
                 splunkd.requests.append((url.path, urllib.parse.parse_qs(url.query), dict(self.headers.items())))
                 if self.headers.get("Authorization") != "Splunk " + splunkd.session_key:
                     self._reply(401, splunkd.fixture("unauthorized.json"))
+                elif url.path == MONITOR_RELOAD_PATH:
+                    splunkd.reloads += 1
+                    self._reply(200, {"entry": [], "messages": []})
                 elif url.path in ROUTES:
                     self._reply(200, splunkd.fixture(ROUTES[url.path]))
                 else:

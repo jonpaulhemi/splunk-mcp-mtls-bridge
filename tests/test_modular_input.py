@@ -7,13 +7,16 @@ import socket
 import ssl
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
+from mtls_bridge import splunk_config
+
 import pki
-from fake_splunkd import AUDIT_INPUT_PATH, MONITOR_RELOAD_PATH
+from fake_splunkd import AUDIT_INPUT_PATH
 from harness import ROOT, SESSION_KEY, Client, wait_for
 
 SCRIPT = ROOT / "package" / "bin" / "mtls_bridge_daemon.py"
@@ -212,7 +215,7 @@ def test_listener_serves_the_override_cert(test_pki, bridge_port, daemon):
 
 
 def _audit_events(splunk_home):
-    path = splunk_home / "var" / "log" / "TA-mtls-bridge" / "audit.log"
+    path = Path(splunk_config.AUDIT_LOG.replace("$SPLUNK_HOME", str(splunk_home)))
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
@@ -226,6 +229,7 @@ def test_daemon_audits_calls_to_the_file_splunk_monitors(test_pki, splunk_home, 
 def test_default_audit_settings_leave_the_input_alone(test_pki, splunkd, bridge_port, daemon):
     assert _serving(test_pki, bridge_port)
     assert splunkd.posts == []
+    assert splunkd.reloads == 0
 
 
 @pytest.mark.parametrize(
@@ -242,7 +246,8 @@ def test_audit_settings_repoint_the_monitor_input(
     process = _start(splunkd, splunk_home, tmp_path)
     try:
         wait_for(lambda: _serving(test_pki, bridge_port), timeout=10)
-        assert splunkd.posts == [(AUDIT_INPUT_PATH, expected), (MONITOR_RELOAD_PATH, {})]
+        assert splunkd.posts == [(AUDIT_INPUT_PATH, expected)]
+        assert splunkd.reloads == 1
         # With forwarding off the file is still written.
         wait_for(lambda: _audit_events(splunk_home), timeout=5)
     finally:
