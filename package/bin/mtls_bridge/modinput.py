@@ -87,6 +87,7 @@ def _run(inputs, splunk_home, parent, stopping):
         log.error("cannot start listener on %s:%s: %s", config.listen_host, config.listen_port, exc)
         return 1
     log.info("bridge listening on %s:%s with %d mappings", *bridge.address, len(config.mappings))
+    bridge.check_tokens()
 
     poll = _poll_seconds()
     next_poll = time.monotonic() + poll
@@ -100,6 +101,7 @@ def _run(inputs, splunk_home, parent, stopping):
             if not _reload(bridge, inputs, splunk_home):
                 status = 1
                 break
+            bridge.check_tokens()
     bridge.stop()
     log.info("bridge stopped")
     return status

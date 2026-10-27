@@ -20,6 +20,7 @@ _PASSTHROUGH_REQUEST_HEADERS = {
 _RETURNED_RESPONSE_HEADERS = frozenset(["content-type", "cache-control", "mcp-protocol-version"])
 
 
+# client_ip is None for the bridge's own requests.
 Forwarded = collections.namedtuple("Forwarded", "client_ip request_id client_headers")
 
 
@@ -85,9 +86,10 @@ class Upstream:
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "Authorization": "Bearer " + token,
-            "X-Forwarded-For": forwarded.client_ip,
             "X-MCP-Request-Id": forwarded.request_id,
         }
+        if forwarded.client_ip is not None:
+            headers["X-Forwarded-For"] = forwarded.client_ip
         for name, shape in _PASSTHROUGH_REQUEST_HEADERS.items():
             value = forwarded.client_headers.get(name)
             if value is not None and shape.fullmatch(value):

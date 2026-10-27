@@ -1,13 +1,13 @@
 """Keeps the CRL the listener enforces: the last good copy of the configured file, and its expiry policy."""
 
 import base64
+import dataclasses
 import datetime
 import logging
 import os
 import ssl
 import tempfile
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 from . import certificate
@@ -22,7 +22,7 @@ _VERIFY_FLAGS = {"leaf": ssl.VERIFY_CRL_CHECK_LEAF, "chain": ssl.VERIFY_CRL_CHEC
 _EXPIRY_POLICIES = ("fail_closed", "fail_open")
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class CrlState:
     """What the listener enforces for revocation right now."""
 
@@ -30,6 +30,7 @@ class CrlState:
     flags: int = 0  # ssl.VERIFY_CRL_CHECK_* to add
     refuse_all: Optional[str] = None  # set when every handshake must be refused (an expired CRL, fail_closed)
     warning: Optional[str] = None  # added to every audit event (an expired CRL, fail_open)
+    next_update: Optional[datetime.datetime] = None  # the earliest nextUpdate of the CRLs read
 
 
 def _pem(crls):
@@ -86,7 +87,7 @@ class CrlKeeper:
             raise ValueError(f"CRL expiry behaviour must be fail_closed or fail_open, not {config.crl_expiry!r}")
         now = now or datetime.datetime.now(datetime.timezone.utc)
         self._read(config.crl_file, now)
-        state = CrlState(self._pem, _VERIFY_FLAGS[config.crl_check])
+        state = CrlState(self._pem, _VERIFY_FLAGS[config.crl_check], next_update=self._next_update)
         if self._next_update is None:
             return state
         if now >= self._next_update:
@@ -120,10 +121,10 @@ class CrlKeeper:
         expired = f"CRL {config.crl_file} expired at {self._next_update.isoformat()}"
         if config.crl_expiry == "fail_open":
             message = f"{expired}; revocation is not checked until a fresh CRL arrives (fail_open)"
-            state = CrlState(warning=message)
+            state = CrlState(warning=message, next_update=state.next_update)
         else:
             message = f"{expired}; every handshake is refused until a fresh CRL arrives (fail_closed)"
-            state = CrlState(state.pem, state.flags, refuse_all=message)
+            state = dataclasses.replace(state, refuse_all=message)
         if self._due("expired"):
             log.error("%s", message)
             self._audit.write("crl_expired", policy=config.crl_expiry, crl_file=config.crl_file, message=message)

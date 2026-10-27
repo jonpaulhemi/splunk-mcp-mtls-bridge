@@ -40,7 +40,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 ## Forwarding (upstream)
 
 - The bridge POSTs to `https://127.0.0.1:8089/services/mcp`. `initialize`, `tools/list` and `tools/call` all travel as POST.
-- **Answered locally:** `ping` (to protect the shared upstream rate limit) and `/health`. GET and DELETE get 405.
+- **Answered locally:** `ping` (to protect the shared upstream rate limit) and `/health`. Other GETs, and DELETE, get 405.
 - **Request headers:** it strips the client `Authorization` header, injects the bearer token, and sends `Host`, `X-Forwarded-For`, `X-MCP-Request-Id` and `traceparent`.
 - **Responses:** it streams them through and strips `WWW-Authenticate`. An upstream 401 becomes a 502 JSON-RPC "bridge credential invalid" error, and the mapping is flagged.
 - **Sessions:** none. The upstream is stateless.
@@ -50,7 +50,9 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 
 - The admin pastes the token and enters its expiry date. The bridge never holds an admin credential.
 - Warnings start 14 days ahead, in the operational log, on `/health` and in a daily audit event.
-- Each new or changed token gets one check at config load. An upstream 401 flags it as invalid. Past the date, the bridge keeps forwarding and warns.
+- Each new or changed token gets one check at config load: an `initialize` sent upstream in the background. An upstream 401 flags it as invalid. A check that can't reach the upstream is retried at the next poll; there is no other background probing.
+- A 401 during forwarding also flags the mapping; a later successful call or a changed token clears it. Past the date, the bridge keeps forwarding and warns.
+- **`/health`** (GET, mapped certs only; others get 403) returns the bridge status (`ok`, `warning` for a token near or past expiry, `degraded` for an invalid token or an expired CRL), its version, whether a CRL is configured and its `nextUpdate`, and each mapping's account, expiry date, days remaining and token status (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401). It never returns tokens, issuers or identities.
 
 ## Audit logging
 

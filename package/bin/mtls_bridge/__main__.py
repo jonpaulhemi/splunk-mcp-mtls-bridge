@@ -28,6 +28,7 @@ def main(argv=None):
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     bridge = BridgeServer(load_config(args.config)).start()
     logging.getLogger("mtls_bridge").info("listening on %s:%s", *bridge.address)
+    bridge.check_tokens()
     while not stopping.wait(1):
         pass
     bridge.stop()

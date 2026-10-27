@@ -98,18 +98,18 @@ def test_response_headers_from_splunkd_are_filtered(test_pki, upstream, client_f
     assert headers["Cache-Control"] == "no-store"
 
 
-def test_upstream_401_becomes_502_and_reports_the_mapping(test_pki, upstream):
-    rejected = []
+def test_upstream_401_becomes_502_and_flags_the_mapping(test_pki, upstream):
     upstream.status = 401
     upstream.headers = {"WWW-Authenticate": "Bearer"}
-    with running_bridge(make_config(test_pki, upstream), on_token_rejected=rejected.append) as bridge:
+    with running_bridge(make_config(test_pki, upstream)) as bridge:
         status, headers, body = client_of(bridge, test_pki, test_pki.mapped).rpc("tools/list", request_id=5)
+        token_status = bridge.health()["mappings"][0]["token_status"]
 
     assert status == 502
     assert "www-authenticate" not in {k.lower() for k in headers}
     assert body["id"] == 5
     assert body["error"]["message"] == "bridge credential invalid"
-    assert [m.account for m in rejected] == ["svc_agent_a"]
+    assert token_status == "invalid"
 
 
 def test_body_over_the_cap_gets_413_without_reaching_upstream(test_pki, upstream, client_for):
