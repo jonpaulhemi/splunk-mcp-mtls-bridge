@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# The daemon targets Python 3.9, so keep typing.Optional/List rather than PEP 604/585 forms.
+ignore = ["UP006", "UP007", "UP035", "UP045"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mtls_bridge"]
+known-local-folder = ["harness", "pki", "fake_upstream"]
