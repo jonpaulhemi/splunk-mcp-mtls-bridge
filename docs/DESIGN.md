@@ -54,6 +54,7 @@ Settled in the grilling for #41, which is the spec.
   - an unflagged client sends the header, `ping` included.
 - **Without a user:** a flagged client's `ping` and `/health` work without the header.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.
+- **Validation:** the User rules page refuses a value that isn't a DN, a rule duplicating another rule of the same type, or a role account that doesn't exist. The Role accounts page refuses to delete a role account that rules still use.
 
 ## Forwarding (upstream)
 
