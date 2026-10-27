@@ -24,6 +24,8 @@ if [[ "$built" != "$version" ]]; then
   exit 1
 fi
 
+python scripts/check_modinput_spec.py output/TA-mtls-bridge
+
 mv output/TA-mtls-bridge-*.tar.gz "output/TA-mtls-bridge-$version.tgz"
 splunk-appinspect inspect "output/TA-mtls-bridge-$version.tgz" --output-file output/appinspect.json --data-format json
 python scripts/check_appinspect.py output/appinspect.json
