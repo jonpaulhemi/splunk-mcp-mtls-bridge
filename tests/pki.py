@@ -53,14 +53,15 @@ def _write_key(path, key):
     )
 
 
-def make_ca(directory, cn, org="Bridge Test", extra=()):
-    """``extra`` holds NameAttributes placed between O and CN."""
+def make_ca(directory, cn, org="Bridge Test", extra=(), parent=None):
+    """A CA: self-signed, or an intermediate signed by ``parent``. ``extra`` holds NameAttributes placed
+    between O and CN."""
     key = ec.generate_private_key(ec.SECP256R1())
     name = _name(cn, org, extra)
-    cert = (
+    builder = (
         x509.CertificateBuilder()
         .subject_name(name)
-        .issuer_name(name)
+        .issuer_name(parent.name if parent else name)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(_NOW - datetime.timedelta(days=1))
@@ -81,8 +82,12 @@ def make_ca(directory, cn, org="Bridge Test", extra=()):
             critical=True,
         )
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
-        .sign(key, hashes.SHA256())
     )
+    if parent:
+        builder = builder.add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(parent.key.public_key()), critical=False
+        )
+    cert = builder.sign(parent.key if parent else key, hashes.SHA256())
     path = Path(directory) / (cn.strip().replace(" ", "_") + ".pem")
     path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return CA(name=name, key=key, cert=cert, cert_path=path)
@@ -147,12 +152,43 @@ class TestPKI:
     multi: Issued
     ambiguous: Issued
     renewed: Issued
+    revoked: Issued  # for CRL tests; a CRL from ``ca`` lists it
+    intermediate: CA  # signed by ``ca``
+    via_intermediate: Issued  # issued by ``intermediate``
+    # CRL files by name: valid (revokes ``revoked``), expired, malformed, revoked_intermediate, near_expiry.
+    # Each covers both issuing CAs, as leaf checking needs.
+    crls: dict
 
 
 MAPPED_URI = "spiffe://bridge.test/agent-a"
+REVOKED_URI = "spiffe://bridge.test/agent-r"
+INTERMEDIATE_URI = "spiffe://bridge.test/agent-i"
 UPN_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
 # An organisation name that needs RFC 4514 escaping.
 ESCAPED_ORG = 'Example, "Inc"+Co'
+
+
+def crl(ca, revoked=(), next_update=datetime.timedelta(days=7), this_update=datetime.timedelta(hours=-1)):
+    """A PEM CRL signed by ``ca`` revoking the certs at the ``revoked`` paths (or CA objects).
+
+    ``next_update`` and ``this_update`` are offsets from now.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca.name)
+        .last_update(now + this_update)
+        .next_update(now + next_update)
+    )
+    for item in revoked:
+        cert = item.cert if isinstance(item, CA) else x509.load_pem_x509_certificate(Path(item).read_bytes())
+        builder = builder.add_revoked_certificate(
+            x509.RevokedCertificateBuilder()
+            .serial_number(cert.serial_number)
+            .revocation_date(now - datetime.timedelta(hours=1))
+            .build()
+        )
+    return builder.sign(ca.key, hashes.SHA256()).public_bytes(serialization.Encoding.PEM)
 
 
 def upn(value):
@@ -223,9 +259,35 @@ def build(directory):
             x509.UniformResourceIdentifier("spiffe://bridge.test/amb-2"),
         ],
     )
+    revoked = issue(ca, directory, "revoked", "agent-r", sans=[x509.UniformResourceIdentifier(REVOKED_URI)])
+    intermediate = make_ca(directory, "Bridge Intermediate CA", parent=ca)
+    via_intermediate = issue(
+        intermediate,
+        directory,
+        "via_intermediate",
+        "agent-i",
+        sans=[x509.UniformResourceIdentifier(INTERMEDIATE_URI)],
+    )
+    hour = datetime.timedelta(hours=1)
+    crl_contents = {
+        "valid": crl(ca, [revoked.cert]) + crl(intermediate),
+        "expired": crl(ca, next_update=-hour, this_update=-2 * hour)
+        + crl(intermediate, next_update=-hour, this_update=-2 * hour),
+        "malformed": b"-----BEGIN X509 CRL-----\nbm90IGEgQ1JM\n-----END X509 CRL-----\n",
+        "revoked_intermediate": crl(ca, [intermediate]) + crl(intermediate),
+        "near_expiry": crl(ca, next_update=12 * hour) + crl(intermediate, next_update=12 * hour),
+    }
+    crls = {}
+    for crl_name, content in crl_contents.items():
+        crls[crl_name] = directory / f"crl_{crl_name}.pem"
+        crls[crl_name].write_bytes(content)
     # Same issuer and identity as "mapped", with a new key and serial.
     renewed = issue(ca, directory, "renewed", "agent-a", sans=[x509.UniformResourceIdentifier(MAPPED_URI)])
     return TestPKI(
+        revoked=revoked,
+        crls=crls,
+        intermediate=intermediate,
+        via_intermediate=via_intermediate,
         escaped_ca=escaped_ca,
         escaped_client=escaped_client,
         multi=multi,

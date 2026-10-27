@@ -6,6 +6,7 @@ verified the chain.
 """
 
 import base64
+import datetime
 import hashlib
 import ipaddress
 import re
@@ -228,17 +229,76 @@ def parse(der):
     return Certificate(issuer, subject, alt_names, serial, hashlib.sha256(der).hexdigest())
 
 
-_PEM = re.compile(rb"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", re.S)
+def _pem_blocks(data, label):
+    """The decoded DER of each PEM block with ``label`` in ``data``."""
+    pattern = re.compile(b"-----BEGIN " + label + b"-----(.+?)-----END " + label + b"-----", re.S)
+    try:
+        return [base64.b64decode(b"".join(block.split()), validate=True) for block in pattern.findall(data)]
+    except ValueError:
+        raise CertificateError("invalid PEM") from None
 
 
 def load(path):
     """Parse the first certificate in a PEM or DER file."""
     with open(path, "rb") as handle:
         data = handle.read()
-    match = _PEM.search(data)
-    if match:
-        try:
-            data = base64.b64decode(b"".join(match.group(1).split()), validate=True)
-        except ValueError:
-            raise CertificateError("invalid PEM") from None
-    return parse(data)
+    blocks = _pem_blocks(data, b"CERTIFICATE")
+    return parse(blocks[0] if blocks else data)
+
+
+_UTC_TIME = 0x17
+_GENERALIZED_TIME = 0x18
+
+
+def _time(tag, content):
+    text = content.decode("ascii")
+    if tag == _UTC_TIME:
+        # RFC 5280: two-digit years 50-99 are 19xx, 00-49 are 20xx.
+        text = ("19" if int(text[:2]) >= 50 else "20") + text
+    elif tag != _GENERALIZED_TIME:
+        raise CertificateError(f"expected a time, found DER tag {tag:#x}")
+    try:
+        return datetime.datetime.strptime(text, "%Y%m%d%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        raise CertificateError(f"unreadable time {text!r}") from None
+
+
+def crl_times(der):
+    """(thisUpdate, nextUpdate or None) of one DER CRL. Raises CertificateError if it isn't a CRL."""
+    tag, crl, end = _read(der, 0)
+    if end != len(der):
+        raise CertificateError("trailing bytes after CRL")
+    tag, tbs, _ = _read(_expect(tag, crl, _SEQUENCE), 0)
+    fields = list(_children(_expect(tag, tbs, _SEQUENCE)))
+    if fields and fields[0][0] == _INTEGER:
+        fields = fields[1:]  # version
+    if len(fields) < 3:
+        raise CertificateError("malformed CRL")
+    _expect(*fields[0], _SEQUENCE)  # signature algorithm
+    _expect(*fields[1], _SEQUENCE)  # issuer
+    this_update = _time(*fields[2])
+    if len(fields) > 3 and fields[3][0] in (_UTC_TIME, _GENERALIZED_TIME):
+        return this_update, _time(*fields[3])
+    return this_update, None
+
+
+def load_crls(data):
+    """Split a PEM or DER CRL file (one or more CRLs) into DER CRLs.
+
+    Raises CertificateError if it holds none or a bad one.
+    """
+    if data.lstrip().startswith(b"-----"):
+        crls = _pem_blocks(data, b"X509 CRL")
+        if not crls:
+            raise CertificateError("no X509 CRL blocks in the file")
+    else:
+        crls, offset = [], 0
+        while offset < len(data):
+            start = offset
+            _, _, offset = _read(data, offset)
+            crls.append(data[start:offset])
+        if not crls:
+            raise CertificateError("empty CRL file")
+    for der in crls:
+        crl_times(der)
+    return crls
