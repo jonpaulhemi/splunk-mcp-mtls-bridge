@@ -445,7 +445,7 @@
                             "type": "singleSelect",
                             "label": "Match",
                             "field": "match",
-                            "help": "How the rule matches the user DN that a proxying client names.",
+                            "help": "Exact DN matches one user. Attributes matches every user whose DN holds all of the value's attributes, in any position. An exact DN rule wins over attribute rules; a user matching two attribute rules is refused.",
                             "required": true,
                             "defaultValue": "dn",
                             "options": {
@@ -454,6 +454,10 @@
                                     {
                                         "value": "dn",
                                         "label": "Exact DN"
+                                    },
+                                    {
+                                        "value": "attributes",
+                                        "label": "Attributes (all must be in the DN)"
                                     }
                                 ]
                             }
@@ -462,7 +466,7 @@
                             "type": "text",
                             "label": "Value",
                             "field": "value",
-                            "help": "The user's distinguished name, for example CN=John Smith,OU=Users,O=Org,C=US. Case and spacing are ignored.",
+                            "help": "For Exact DN, the user's distinguished name, such as CN=John Smith,OU=Users,O=Org,C=US. For Attributes, the attributes every matching DN must hold, such as OU=Analysts,O=Org. Case and spacing are ignored.",
                             "required": true,
                             "validators": [
                                 {

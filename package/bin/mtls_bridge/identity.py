@@ -156,7 +156,12 @@ def dn_key(text, what="DN"):
 
     Raises ValueError, naming the value as ``what``, if ``text`` isn't a distinguished name.
     """
-    return ",".join("+".join(rdn) for rdn in dn_rdns(text, what))
+    return dn_key_of(dn_rdns(text, what))
+
+
+def dn_key_of(rdns):
+    """dn_key's canonical form of RDNs as dn_rdns returns them."""
+    return ",".join("+".join(rdn) for rdn in rdns)
 
 
 def dn_rdns(text, what="DN"):
