@@ -48,6 +48,9 @@ def _flag(value, default):
 class ConfigError(Exception):
     """The configuration can't be used."""
 
+    # The mappings, role accounts and user rules, when only the listener settings are the problem.
+    access = None
+
 
 class NotConfigured(ConfigError):
     """The admin hasn't finished setting up the bridge yet."""
@@ -58,11 +61,32 @@ class SessionExpired(ConfigError):
 
 
 def load(server_uri, session_key, splunk_home):
+    """The bridge's Config. A ConfigError raised because the listener settings can't be used carries
+    the mappings, role accounts and user rules in ``access``, so they can still be applied."""
     rest = _Rest(server_uri, session_key)
+    access = dict(
+        mappings=_rows(rest, _MAPPINGS, {"--cred--": "1"}, _mapping),
+        role_accounts=_rows(rest, _ROLE_ACCOUNTS, {"--cred--": "1"}, _role_account),
+        user_rules=_rows(rest, _USER_RULES, {}, _user_rule),
+    )
+    try:
+        return Config(**_listener_values(rest, splunk_home), **access)
+    except SessionExpired:
+        raise
+    except ConfigError as exc:
+        exc.access = access
+        raise
+
+
+def _rows(rest, path, params, build):
+    """The enabled rows of a table that ``build`` can turn into something the bridge can use."""
+    entries = rest.entries(path, dict(params, count="0"), required=False)
+    built = (build(entry) for entry in entries if not _flag(entry["content"].get("disabled"), False))
+    return [row for row in built if row is not None]
+
+
+def _listener_values(rest, splunk_home):
     settings = rest.entries(_SETTINGS, {"--cred--": "1"})[0]["content"]
-    rows = rest.entries(_MAPPINGS, {"--cred--": "1", "count": "0"}, required=False)
-    role_accounts = rest.entries(_ROLE_ACCOUNTS, {"--cred--": "1", "count": "0"}, required=False)
-    user_rules = rest.entries(_USER_RULES, {"count": "0"}, required=False)
 
     def path(value):
         return value.replace("$SPLUNK_HOME", splunk_home) if value else value
@@ -88,9 +112,6 @@ def load(server_uri, session_key, splunk_home):
         upstream_verify_hostname=_flag(settings.get("upstream_verify_hostname"), False),
         audit_log=path(AUDIT_LOG),
         crl_file=path(settings.get("crl_file")) or None,
-        mappings=[m for m in (_mapping(row) for row in rows) if m is not None],
-        role_accounts=[a for a in (_role_account(row) for row in role_accounts) if a is not None],
-        user_rules=[r for r in (_user_rule(row) for row in user_rules) if r is not None],
     )
     # Settings left empty keep Config's defaults.
     for name in ("listen_host", "upstream_url", "crl_check", "crl_expiry"):
@@ -99,7 +120,7 @@ def load(server_uri, session_key, splunk_home):
     for name in ("listen_port", "max_concurrent_per_user"):
         if settings.get(name):
             values[name] = _int(settings, name)
-    return Config(**values)
+    return values
 
 
 def sync_audit_input(server_uri, session_key):

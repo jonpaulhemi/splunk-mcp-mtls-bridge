@@ -333,6 +333,27 @@ def test_bad_config_keeps_the_last_good_one_serving(test_pki, splunkd, splunk_ho
     assert daemon.poll() is None
 
 
+@pytest.mark.parametrize(
+    "breakage",
+    [
+        lambda splunkd: splunkd.content_overrides["settings_listener.json"].update(listen_port="not-a-port"),
+        lambda splunkd: splunkd.content_overrides["settings_listener.json"].update(server_key="/nonexistent.key"),
+        lambda splunkd: splunkd.empty.add("settings_listener.json"),
+    ],
+    ids=["invalid", "unreadable key", "missing"],
+)
+def test_deleted_mapping_is_revoked_even_while_the_listener_settings_are_broken(
+    test_pki, splunkd, splunk_home, bridge_port, daemon, breakage
+):
+    assert _status(test_pki, bridge_port, test_pki.mapped) == 200
+    breakage(splunkd)
+    splunkd.empty.add("mappings.json")
+
+    _eventually(lambda: _status(test_pki, bridge_port, test_pki.mapped) == 403)
+    assert "keeping the last good" in _log(splunk_home)
+    assert daemon.poll() is None
+
+
 def test_session_key_rejected_mid_run_makes_the_daemon_exit(test_pki, splunkd, splunk_home, bridge_port, daemon):
     assert _status(test_pki, bridge_port, test_pki.mapped) == 200
     splunkd.session_key = "rotated-by-splunkd"

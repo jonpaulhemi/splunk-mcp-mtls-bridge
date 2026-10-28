@@ -61,7 +61,7 @@ Each row maps one client certificate to one Splunk account.
 | MCP token | That account's encrypted MCP token from the MCP Server app. It is stored encrypted in Splunk's credential store. |
 | Token expiry date | The token's expiry date, as `YYYY-MM-DD`. |
 
-A cert that matches no row, or more than one row, is refused with HTTP 403. Deleting a row revokes that client at the next poll. A row whose token can't be read is skipped with an error in the operational log, so its client also gets 403.
+A cert that matches no row, or more than one row, is refused with HTTP 403. Deleting or disabling a row revokes that client at the next poll, even while the Listener settings are broken. A row whose token can't be read is skipped with an error in the operational log, so its client also gets 403.
 
 **Finding the issuer and identity values.** Either of these gives you values in the exact form the Mappings tab expects:
 
@@ -131,7 +131,7 @@ The tabs refuse a rule whose value isn't a DN, a rule that duplicates another ru
 5. On the **User rules** tab, add rules sending users to role accounts.
 6. On the **Mappings** tab, add the client's row with **Proxies users** checked.
 
-Changes on any of these tabs apply at the next poll, with no restart.
+Changes on any of these tabs apply at the next poll, with no restart. A disabled role account or user rule is ignored, as if it were deleted.
 
 **Shared rate limit.** Splunk's MCP Server allows 240 requests a minute per Splunk account. Every user whose rule points at the same role account shares that budget, so one busy user can slow their whole group. The bridge answers `initialize` and notifications itself, so only `tools/list` and `tools/call` count. Split large groups across several role accounts if that becomes a problem.
 

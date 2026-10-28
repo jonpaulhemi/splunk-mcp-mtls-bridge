@@ -18,7 +18,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 ## Architecture
 
 - **Process:** our own single-instance modular input script (`interval = 30`, a lock file, SIGTERM handling and orphan detection), started and restarted by splunkd.
-- **Config:** the bridge reads its config and secrets with splunkd's session key and polls every 30–60s, so changes apply live. On a 401 it exits and splunkd relaunches it.
+- **Config:** the bridge reads its config and secrets with splunkd's session key and polls every 30–60s, so changes apply live. Listener settings that can't be used keep the last good ones, but the mappings, role accounts and user rules still apply, so a deleted or disabled row is always revoked. On a 401 it exits and splunkd relaunches it.
 - **Runtime:** the daemon uses Splunk's bundled Python and the standard library only. The UCC REST handlers use pinned, bundled pure-Python libs.
 - **Config UI:** UCC 6.3.0 or later. Tokens are encrypted in `storage/passwords`.
 

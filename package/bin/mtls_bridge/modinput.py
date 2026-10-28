@@ -6,6 +6,7 @@ the config every poll and applies changes live, and exits on SIGTERM, when splun
 or when splunkd stops accepting the key. splunkd restarts it after the stanza's interval.
 """
 
+import dataclasses
 import fcntl
 import logging
 import logging.handlers
@@ -127,8 +128,16 @@ def _reload(bridge, inputs, splunk_home):
         _session_key_rejected(exc)
         return False
     except splunk_config.ConfigError as exc:
-        log.error("cannot reload the configuration (%s); keeping the last good configuration", exc)
-        return True
+        if exc.access is None:
+            log.error("cannot reload the configuration (%s); keeping the last good configuration", exc)
+            return True
+        # Still apply the mappings, role accounts and user rules, so a deleted one is revoked.
+        log.error(
+            "cannot reload the listener settings (%s); applying the new mappings, role accounts and user rules "
+            "and keeping the last good configuration for the rest",
+            exc,
+        )
+        config = dataclasses.replace(bridge.config, **exc.access)
     if not _sync_audit_input(inputs):
         return False
     changed = config != bridge.config
