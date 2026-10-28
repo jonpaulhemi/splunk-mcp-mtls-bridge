@@ -231,3 +231,16 @@ def test_max_concurrent_per_user_comes_from_the_listener_page(test_pki, splunkd,
 
     splunkd.content_overrides["settings_listener.json"] = {"max_concurrent_per_user": "5"}
     assert _load(splunkd, splunk_home).max_concurrent_per_user == 5
+
+
+@pytest.mark.parametrize("disabled", [True, "1"])
+def test_disabled_rows_are_left_out(test_pki, splunkd, splunk_home, disabled):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    for fixture in ("mappings.json", "role_accounts.json", "user_rules.json"):
+        splunkd.content_overrides[fixture] = {"disabled": disabled}
+
+    config = _load(splunkd, splunk_home)
+
+    assert [m.account for m in config.mappings] == ["svc_agent_b"]
+    assert [a.name for a in config.role_accounts] == ["engineers"]
+    assert [r.name for r in config.user_rules] == ["jane"]
