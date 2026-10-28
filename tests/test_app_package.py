@@ -9,6 +9,7 @@ import sys
 
 from mtls_bridge import __version__, splunk_config
 from mtls_bridge.audit import AuditLog
+from mtls_bridge.config import Config
 
 from harness import ROOT
 
@@ -108,3 +109,10 @@ def test_every_configuration_page_is_admin_only():
     for name in confs | {"passwords"}:
         assert name in access, f"default.meta has no [{name}] stanza"
         assert _admin_only(access[name]), name
+
+
+def test_listener_page_offers_the_daemons_default_port():
+    tabs = json.loads((ROOT / "globalConfig.json").read_text())["pages"]["configuration"]["tabs"]
+    port = next(e for t in tabs for e in t.get("entity", []) if e["field"] == "listen_port")
+    assert port["defaultValue"] == "10443"
+    assert Config.__dataclass_fields__["listen_port"].default == 10443

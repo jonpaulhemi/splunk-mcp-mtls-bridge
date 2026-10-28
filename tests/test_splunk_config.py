@@ -256,3 +256,10 @@ def test_token_that_cannot_go_in_a_header_is_skipped(test_pki, splunkd, splunk_h
 
     assert [m.account for m in config.mappings] == ["svc_agent_b"]
     assert [a.name for a in config.role_accounts] == ["engineers"]
+
+
+def test_port_left_empty_defaults_to_10443(test_pki, splunkd, splunk_home):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    splunkd.content_overrides["settings_listener.json"] = {"listen_port": None}
+
+    assert _load(splunkd, splunk_home).listen_port == 10443
