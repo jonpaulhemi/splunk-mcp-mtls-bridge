@@ -52,15 +52,15 @@ Settled in the grilling for #41, which is the spec.
   - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
   - no rule matches, or two attribute rules do;
   - the matching rule's role account didn't load (an unreadable token, say). The user never falls through to a broader rule.
-  - an unflagged client sends the header, `ping` included.
-- **Without a user:** a flagged client's `ping` and `/health` work without the header.
+  - an unflagged client sends the header, `ping` and notifications included.
+- **Without a user:** a flagged client's `ping`, notifications and `/health` work without the header. Its `initialize` needs a user.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.
 - **Validation:** the User rules page refuses a value that isn't a DN, a rule duplicating another rule of the same type, or a role account that doesn't exist. The Role accounts page refuses to delete a role account that rules still use.
 
 ## Forwarding (upstream)
 
 - The bridge POSTs to `https://127.0.0.1:8089/services/mcp`. `initialize`, `tools/list` and `tools/call` all travel as POST.
-- **Answered locally:** `ping` (to protect the shared upstream rate limit) and `/health`. Other GETs, and DELETE, get 405.
+- **Answered locally (#70):** `ping`, `initialize`, notifications and `/health`. Every upstream request spends the account's rate limit, and the MCP Server's own answers are fixed: it always announces protocolVersion 2025-11-25 and answers notifications with 202. Some clients require the version they asked for and a 200. The bridge echoes a requested version it knows (2024-11-05, 2025-03-26, 2025-06-18 or 2025-11-25; otherwise it offers 2025-11-25) and answers notifications with an empty 200. Other GETs, and DELETE, get 405.
 - **Request headers:** it strips the client `Authorization` header, injects the bearer token, and sends `Host`, `X-Forwarded-For`, `X-MCP-Request-Id` and `traceparent`.
 - **Responses:** it streams them through and strips `WWW-Authenticate`. An upstream 401 becomes a 502 JSON-RPC "bridge credential invalid" error, and the mapping is flagged.
 - **Sessions:** none. The upstream is stateless.

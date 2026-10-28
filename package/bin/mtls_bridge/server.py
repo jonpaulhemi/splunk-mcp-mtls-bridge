@@ -38,6 +38,10 @@ _ERR_CREDENTIAL = -32003
 _ERR_BUSY = -32004
 _ERR_TOO_LARGE = -32005
 
+# MCP revisions the bridge's local initialize answer can name. A client asking for another is offered
+# the latest; the methods this bridge's clients use look the same in all of them.
+_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+
 
 def listener_context(config):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -80,6 +84,16 @@ def _parse(body):
     except ValueError:
         return None
     return message if isinstance(message, dict) else None
+
+
+def _initialize_result(message):
+    params = message.get("params")
+    requested = params.get("protocolVersion") if isinstance(params, dict) else None
+    return {
+        "protocolVersion": requested if requested in _PROTOCOL_VERSIONS else _PROTOCOL_VERSIONS[-1],
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": "TA-mtls-bridge", "version": __version__},
+    }
 
 
 def _tls_fingerprint(config, crl_state):
@@ -244,18 +258,28 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}", rpc_id)
             return
         mapping = self._mapping
-        ping = message.get("method") == "ping"
-        # A proxying client's pings need no user; anyone else naming a user is refused, pings included.
-        if not (ping and mapping.proxies_users):
+        method = message.get("method")
+        ping = method == "ping"
+        notification = isinstance(method, str) and method.startswith("notifications/")
+        # A proxying client's pings and notifications need no user; anyone else naming a user is refused,
+        # pings and notifications included.
+        if not ((ping or notification) and mapping.proxies_users):
             try:
                 self._user = users.resolve(mapping, self.headers.get_all(users.HEADER), self._live.config)
             except users.UserRejection as rejection:
                 self._rejection, self._user_received = rejection.reason, rejection.received
                 self._send_rpc_error(403, _ERR_FORBIDDEN, rejection.message, rpc_id)
                 return
+        # Answered here, never upstream: every upstream request spends the account's rate limit, and the
+        # MCP Server's own answers are fixed (initialize always names 2025-11-25; notifications get 202).
         if ping:
-            # Answered here so health checks don't spend the upstream's shared rate limit.
             self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": {}})
+            return
+        if notification:
+            self._send_headers(200, [("Content-Length", "0")])
+            return
+        if method == "initialize":
+            self._send_json(200, {"jsonrpc": "2.0", "id": rpc_id, "result": _initialize_result(message)})
             return
         # The account and token the call runs as.
         credential = mapping if self._user is None else self._user.role_account
