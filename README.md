@@ -111,7 +111,7 @@ X-ProxiedEntitiesChain: CN=John Smith,OU=Users,O=Org,C=US
 X-ProxiedEntitiesChain: <CN=John Smith,OU=Users,O=Org,C=US>
 ```
 
-A chain of several DNs (`<user><proxy>`) is refused. The header is never forwarded to the MCP Server. A proxying client's `ping` and `GET /health` need no header.
+A chain of several DNs (`<user><proxy>`) is refused. The header is never forwarded to the MCP Server. A proxying client's `ping`, notifications (such as `notifications/initialized`) and `GET /health` need no header. Its `initialize` does.
 
 **User rules.** Each rule has a match type:
 
@@ -133,7 +133,7 @@ The tabs refuse a rule whose value isn't a DN, a rule that duplicates another ru
 
 Changes on any of these tabs apply at the next poll, with no restart.
 
-**Shared rate limit.** Splunk's MCP Server allows 240 requests a minute per Splunk account. Every user whose rule points at the same role account shares that budget, so one busy user can slow their whole group. Split large groups across several role accounts if that becomes a problem.
+**Shared rate limit.** Splunk's MCP Server allows 240 requests a minute per Splunk account. Every user whose rule points at the same role account shares that budget, so one busy user can slow their whole group. The bridge answers `initialize` and notifications itself, so only `tools/list` and `tools/call` count. Split large groups across several role accounts if that becomes a problem.
 
 ### Audit
 
@@ -152,7 +152,7 @@ The proxied-user rejection reasons:
 | --- | --- | --- |
 | `proxied_user_missing` | 403 | A client that proxies users sent no `X-ProxiedEntitiesChain`. |
 | `proxied_user_malformed` | 403 | The header isn't one DN: a chain, unbalanced brackets, empty, not a DN, or over 4 KiB. |
-| `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` included. |
+| `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` and notifications included. |
 | `user_unmatched` | 403 | No user rule matches the user, or the matching rule's role account couldn't be loaded. |
 | `user_ambiguous` | 403 | The user matches no exact rule and more than one attribute rule. |
 
@@ -315,7 +315,12 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
 - **Custom connectors in claude.ai, Claude Desktop and Cowork can't connect.** They can't present a client certificate.
 - **Rate limit:** the MCP Server app (v2.1.0) allows 240 requests a minute per Splunk account by default. Every cert mapped to the same account, and every proxied user sent to the same role account, shares that budget.
 - **Request size and concurrency:** request bodies are capped at 128 KiB (HTTP 413 above that), with 10 concurrent requests per mapped identity and, for [proxied users](#proxied-users), 2 per user by default (HTTP 429 above either; the error message says whether it was the client's or the user's limit).
-- **Answered by the bridge:** `ping` is answered locally. A GET on `/health` from a mapped cert returns JSON with:
+- **Answered by the bridge:** these never reach the MCP Server, so they don't count toward its rate limit. Cert and user checks still apply.
+  - `ping` gets an empty result.
+  - `initialize` gets `capabilities: {"tools": {}}` and `serverInfo` naming the bridge. Its `protocolVersion` is the client's requested one if it's 2024-11-05, 2025-03-26, 2025-06-18 or 2025-11-25, and 2025-11-25 otherwise. (The MCP Server itself always answers 2025-11-25.) A bad token therefore shows up on `tools/list`, not on `initialize`.
+  - Notifications such as `notifications/initialized` get HTTP 200 with an empty body.
+
+  A GET on `/health` from a mapped cert returns JSON with:
   - `status`: `ok`; `warning` when a token is within 14 days of its expiry date or past it; or `degraded` when a token is invalid or the CRL has expired;
   - `version`, and `crl` (`present`, `next_update`, `expired`);
   - per mapping with a token, and per role account (also with its `name`): `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
