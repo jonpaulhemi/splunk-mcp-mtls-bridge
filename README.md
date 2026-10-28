@@ -250,10 +250,7 @@ async def main():
     tls = ssl.create_default_context(cafile="listener-ca.pem")
     tls.load_cert_chain("client.pem", "client.key")
     async with httpx2.AsyncClient(verify=tls, timeout=httpx2.Timeout(30, read=300)) as http:
-        async with streamable_http_client("https://bridge.example.com:8443/services/mcp", http_client=http) as (
-            read,
-            write,
-        ):
+        async with streamable_http_client("https://bridge.example.com:8443/services/mcp", http_client=http) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 print([tool.name for tool in (await session.list_tools()).tools])
