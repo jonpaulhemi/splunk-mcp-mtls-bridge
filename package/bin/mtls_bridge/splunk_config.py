@@ -230,6 +230,9 @@ def _token(entry, kind):
     if not token or set(token) == {"*"}:
         log.error("%s %s has no readable token; skipping it", kind, entry["name"])
         return None
+    if not all("!" <= char <= "~" for char in token):
+        log.error("%s %s has a token with spaces or characters a header can't carry; skipping it", kind, entry["name"])
+        return None
     return token
 
 

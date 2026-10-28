@@ -264,7 +264,14 @@
                             "field": "token",
                             "help": "The account's encrypted MCP token from the Splunk MCP Server app. Stored encrypted in Splunk's credential store.",
                             "required": false,
-                            "encrypted": true
+                            "encrypted": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Paste the token as one line, with no spaces.",
+                                    "pattern": "^[!-~]*$"
+                                }
+                            ]
                         },
                         {
                             "type": "text",
@@ -360,7 +367,14 @@
                             "field": "token",
                             "help": "The account's encrypted MCP token from the Splunk MCP Server app. Stored encrypted in Splunk's credential store.",
                             "required": true,
-                            "encrypted": true
+                            "encrypted": true,
+                            "validators": [
+                                {
+                                    "type": "regex",
+                                    "errorMsg": "Paste the token as one line, with no spaces.",
+                                    "pattern": "^[!-~]*$"
+                                }
+                            ]
                         },
                         {
                             "type": "text",

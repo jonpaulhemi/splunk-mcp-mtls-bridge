@@ -87,6 +87,15 @@ def test_locally_answered_and_refused_calls_are_audited(test_pki, upstream, audi
     assert upstream.received == []
 
 
+@pytest.mark.parametrize("method", ["PUT", "OPTIONS", "BREW"])
+def test_other_methods_are_audited(test_pki, upstream, audit_path, method):
+    with running_bridge(make_config(test_pki, upstream, audit_log=str(audit_path))) as bridge:
+        client_of(bridge, test_pki, test_pki.mapped).request(method)
+
+    [event] = _events(audit_path)
+    assert (event["http_method"], event["status"]) == (method, 405)
+
+
 @pytest.mark.parametrize("cert_name, reason", [("unmapped", "unmapped"), ("ambiguous", "ambiguous")])
 def test_rejected_cert_is_audited_with_values_to_paste_into_a_mapping(
     test_pki, upstream, audit_path, cert_name, reason

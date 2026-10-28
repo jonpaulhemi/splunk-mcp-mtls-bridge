@@ -244,3 +244,15 @@ def test_disabled_rows_are_left_out(test_pki, splunkd, splunk_home, disabled):
     assert [m.account for m in config.mappings] == ["svc_agent_b"]
     assert [a.name for a in config.role_accounts] == ["engineers"]
     assert [r.name for r in config.user_rules] == ["jane"]
+
+
+@pytest.mark.parametrize("token", ["two words", "line\nbreak", " "])
+def test_token_that_cannot_go_in_a_header_is_skipped(test_pki, splunkd, splunk_home, token):
+    _write_combined_pem(test_pki, splunk_home / "etc" / "auth" / "server.pem")
+    for fixture in ("mappings.json", "role_accounts.json"):
+        splunkd.content_overrides[fixture] = {"token": token}
+
+    config = _load(splunkd, splunk_home)
+
+    assert [m.account for m in config.mappings] == ["svc_agent_b"]
+    assert [a.name for a in config.role_accounts] == ["engineers"]

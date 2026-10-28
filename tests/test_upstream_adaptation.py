@@ -25,9 +25,9 @@ def test_ping_from_an_unmapped_cert_is_refused(test_pki, upstream, client_for):
     assert status == 403
 
 
-def test_get_and_delete_get_405(test_pki, upstream, client_for):
+def test_methods_other_than_post_get_405(test_pki, upstream, client_for):
     client = client_for(test_pki.mapped)
-    for method in ("GET", "DELETE"):
+    for method in ("GET", "DELETE", "PUT", "PATCH", "OPTIONS", "HEAD", "BREW"):
         status, headers, _ = client.request(method)
         assert status == 405
         assert headers["Allow"] == "POST"
