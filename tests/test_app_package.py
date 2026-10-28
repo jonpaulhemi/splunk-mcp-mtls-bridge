@@ -82,3 +82,29 @@ def test_spec_declaring_interval_is_caught(tmp_path):
     )
     problems = check_modinput_spec.problems(app)
     assert "README/inputs.conf.spec must not declare interval for mtls_bridge_daemon://<name>" in problems
+
+
+def _admin_only(access):
+    return access.replace(" ", "") == "read:[admin,sc_admin],write:[admin,sc_admin]"
+
+
+def test_every_configuration_page_is_admin_only():
+    """Each page's conf, and the credential store holding its tokens, is readable by admins only (#56)."""
+    global_config = json.loads((ROOT / "globalConfig.json").read_text())
+    root = global_config["meta"]["restRoot"]
+    confs = {
+        f"{root}_{tab['name']}" if "table" in tab else f"{root}_settings"
+        for tab in global_config["pages"]["configuration"]["tabs"]
+    }
+    # configparser can't read the app-wide [] stanza, so read the stanzas' access lines by hand.
+    access, stanza = {}, None
+    for line in (ROOT / "package" / "metadata" / "default.meta").read_text().splitlines():
+        if line.startswith("["):
+            stanza = line.strip()[1:-1]
+        elif line.startswith("access"):
+            access[stanza] = line.partition("=")[2]
+
+    assert confs >= {f"{root}_mappings", f"{root}_role_accounts", f"{root}_user_rules", f"{root}_settings"}
+    for name in confs | {"passwords"}:
+        assert name in access, f"default.meta has no [{name}] stanza"
+        assert _admin_only(access[name]), name
