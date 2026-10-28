@@ -325,7 +325,7 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
   - `version`, and `crl` (`present`, `next_update`, `expired`);
   - per mapping with a token, and per role account (also with its `name`): `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
 
-  It never includes tokens. Unmapped certs get 403. Other GETs, and DELETE, get HTTP 405.
+  It never includes tokens. Unmapped certs get 403. Other GETs, and every method other than POST, get HTTP 405 and are audited.
 - **Other errors clients may see:** 411 for a POST without `Content-Length` (chunked request bodies aren't accepted), 502 when the MCP Server is unreachable or rejects the bridge's token, and 504 when it times out (after 300 seconds).
 - **Out of scope:** search head clusters, Splunk Cloud and OCSP.
 

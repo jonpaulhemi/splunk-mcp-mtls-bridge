@@ -165,6 +165,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._audited(self._method_not_allowed)
 
+    def __getattr__(self, name):
+        # BaseHTTPRequestHandler answers a method with no do_ handler 501, unaudited; send them all to 405.
+        if name.startswith("do_"):
+            return self.do_DELETE
+        raise AttributeError(name)
+
     def do_POST(self):
         self._audited(self._post)
 
@@ -347,7 +353,7 @@ class _Handler(BaseHTTPRequestHandler):
         error = None
         if length is None:
             error = (411, _ERR_INVALID_REQUEST, "Content-Length required")
-        elif not length.isdigit():
+        elif not (length.isascii() and length.isdigit()):
             error = (400, _ERR_INVALID_REQUEST, "invalid Content-Length")
         elif int(length) > limit:
             error = (413, _ERR_TOO_LARGE, f"request body exceeds {limit} bytes")

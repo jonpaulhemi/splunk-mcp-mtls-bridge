@@ -140,3 +140,10 @@ def test_idle_client_after_handshake_is_disconnected(test_pki, upstream):
                 started = time.monotonic()
                 assert tls.recv(1) == b""
                 assert time.monotonic() - started < 3
+
+
+def test_content_length_with_non_ascii_digits_gets_400(client_for, test_pki, upstream):
+    # "²" is a digit to str.isdigit but not to int().
+    status, _, _ = client_for(test_pki.mapped).request("POST", body=b"{}", headers={"Content-Length": "²"})
+    assert status == 400
+    assert upstream.received == []

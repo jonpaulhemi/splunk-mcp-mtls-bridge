@@ -191,6 +191,14 @@ class TokenMonitor:
             return None, None
 
     def _check_upstream(self):
+        try:
+            self._check_each()
+        finally:
+            # However the check ends, so the next one can start.
+            with self._lock:
+                self._checker = None
+
+    def _check_each(self):
         body = _check_body()
         tried = set()
         # Picks up tokens that arrive while it runs, so a rotation mid-check is checked promptly.
@@ -206,6 +214,10 @@ class TokenMonitor:
                 # Left unchecked, so the next config poll tries again.
                 log.warning("cannot check the token for account %s: %s", holder.account, exc)
                 continue
+            except Exception:
+                log.exception("cannot check the token for account %s", holder.account)
+                self._set(holder, UNVERIFIED, only_if_unchecked=True)
+                continue
             if code == 401:
                 log.warning("the MCP Server rejected the token for account %s", holder.account)
                 status = INVALID
@@ -215,5 +227,3 @@ class TokenMonitor:
                 log.warning("the MCP Server answered the token check for account %s with HTTP %s", holder.account, code)
                 status = UNVERIFIED
             self._set(holder, status, only_if_unchecked=True)
-        with self._lock:
-            self._checker = None

@@ -355,3 +355,13 @@ def test_401_on_a_proxied_call_flags_the_role_account(test_pki, upstream):
     statuses = {r["name"]: r["token_status"] for r in health["role_accounts"]}
     assert statuses == {"analysts": "invalid", "engineers": "unchecked"}
     assert health["status"] == "degraded"
+
+
+def test_a_token_the_check_cannot_send_does_not_stop_the_others_being_checked(test_pki, upstream):
+    good = make_config(test_pki, upstream).mappings[0]
+    # http.client refuses to send a header value holding a line break.
+    unsendable = dataclasses.replace(good, identity_value="spiffe://bridge.test/other", token="bad\ntoken")
+    with running_bridge(make_config(test_pki, upstream, mappings=[unsendable, good])) as bridge:
+        bridge.check_tokens()
+        wait_for(lambda: not bridge.tokens.checking())
+        assert bridge.health()["mappings"][1]["token_status"] == "ok"

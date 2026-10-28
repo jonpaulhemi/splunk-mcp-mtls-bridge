@@ -56,7 +56,7 @@ class Response:
         self.status = raw.status
         self.headers = [(n, v) for n, v in raw.getheaders() if n.lower() in _RETURNED_RESPONSE_HEADERS]
         length = raw.getheader("Content-Length")
-        self.length = int(length) if length is not None and length.isdigit() else None
+        self.length = int(length) if length is not None and length.isascii() and length.isdigit() else None
         self._remaining = self.length
 
     def read_chunk(self, size):
