@@ -5,7 +5,7 @@ The official Splunk MCP Server app only accepts a bearer token. This app lets no
 The bridge listens for mutual TLS and maps each client certificate to a local Splunk account. It then forwards the client's MCP calls to the MCP Server app with that account's encrypted MCP token. Clients never see a token. Splunk RBAC applies per mapped account, and every call and rejection is audited.
 
 ```
-MCP client --mTLS--> bridge (:8443) --bearer token--> Splunk MCP Server app (splunkd :8089)
+MCP client --mTLS--> bridge (:10443) --bearer token--> Splunk MCP Server app (splunkd :8089)
 ```
 
 Design decisions are in [`docs/DESIGN.md`](docs/DESIGN.md).
@@ -25,6 +25,8 @@ Search head clusters, Splunk Cloud and OCSP are out of scope.
 
 The bridge starts within a minute of the Listener tab getting a client CA bundle. After that it picks up every change within 30 seconds, with no restart. Its operational log is `$SPLUNK_HOME/var/log/splunk/ta_mtls_bridge.log`.
 
+**Upgrading to 0.2.1.** The default port is now 10443 (it was 8443). A bridge whose Listener tab has been saved keeps the port saved there, so it doesn't move. To move it, change the Port on the Listener tab, then update the firewall and your clients' URLs.
+
 **Upgrading from 0.1.0.** Splunk never starts the bridge daemon in 0.1.0, because its `README/inputs.conf.spec` declares no parameter. Install 0.1.1 or later over it (Install app from file, with "Upgrade app" ticked) and restart Splunk. If you patched the spec by hand, the upgrade replaces your edit. If you added `interval =` to it, remove it: with that line Splunk starts the daemon but doesn't restart it after it exits.
 
 ## Configure
@@ -33,7 +35,7 @@ The bridge starts within a minute of the Listener tab getting a client CA bundle
 
 | Field | What to enter |
 | --- | --- |
-| Bind address, Port | Where clients connect (default `0.0.0.0:8443`). Open the port in the host firewall. |
+| Bind address, Port | Where clients connect (default `0.0.0.0:10443`). Open the port in the host firewall. |
 | Client CA bundle | A PEM file with every CA that issues client certificates. Only certs that chain to one of these are accepted. |
 | Listener certificate, key, key password | The cert clients see. Leave the certificate empty to reuse splunkd's server cert (`[sslConfig] serverCert`). Leave the key empty if the certificate file also holds the key. With no password set, the bridge also tries Splunk's default key password. |
 | Max concurrent requests per user | How many calls one [proxied user](#proxied-users) may have in flight at once (default 2). The client's own limit of 10 still applies. |
@@ -214,11 +216,11 @@ For an RSA key, use `-newkey rsa:2048` in place of `-newkey ec -pkeyopt ec_param
 
 In each recipe:
 
-- `bridge.example.com:8443` is the bridge;
+- `bridge.example.com:10443` is the bridge;
 - `client.pem` and `client.key` are the client's cert and key;
 - `listener-ca.pem` is the CA that issued the bridge's listener cert.
 
-The MCP endpoint is `https://bridge.example.com:8443/services/mcp`. Each recipe was tried against a running bridge in front of an MCP server, with the versions noted.
+The MCP endpoint is `https://bridge.example.com:10443/services/mcp`. Each recipe was tried against a running bridge in front of an MCP server, with the versions noted.
 
 ### Claude Code
 
@@ -229,7 +231,7 @@ export CLAUDE_CODE_CLIENT_CERT=/path/to/client.pem
 export CLAUDE_CODE_CLIENT_KEY=/path/to/client.key
 export CLAUDE_CODE_CLIENT_KEY_PASSPHRASE=...           # only if the key is encrypted
 export NODE_EXTRA_CA_CERTS=/path/to/listener-ca.pem    # if the listener CA isn't publicly trusted
-claude mcp add --transport http splunk https://bridge.example.com:8443/services/mcp
+claude mcp add --transport http splunk https://bridge.example.com:10443/services/mcp
 claude mcp list   # splunk: ... (HTTP) - ✓ Connected
 ```
 
@@ -250,7 +252,7 @@ async def main():
     tls = ssl.create_default_context(cafile="listener-ca.pem")
     tls.load_cert_chain("client.pem", "client.key")
     async with httpx2.AsyncClient(verify=tls, timeout=httpx2.Timeout(30, read=300)) as http:
-        async with streamable_http_client("https://bridge.example.com:8443/services/mcp", http_client=http) as (read, write):
+        async with streamable_http_client("https://bridge.example.com:10443/services/mcp", http_client=http) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 print([tool.name for tool in (await session.list_tools()).tools])
@@ -276,7 +278,7 @@ const agent = new Agent({
     key: readFileSync("client.key"),
   },
 });
-const transport = new StreamableHTTPClientTransport(new URL("https://bridge.example.com:8443/services/mcp"), {
+const transport = new StreamableHTTPClientTransport(new URL("https://bridge.example.com:10443/services/mcp"), {
   fetch: (url, init) => fetch(url, { ...init, dispatcher: agent }),
 });
 const client = new Client({ name: "report-bot", version: "1.0.0" });
@@ -292,7 +294,7 @@ await client.close();
 For clients that only speak stdio or plain HTTP, run [ghostunnel](https://github.com/ghostunnel/ghostunnel) on the client host as a local forward proxy that adds the client cert:
 
 ```sh
-ghostunnel client --listen localhost:8080 --target bridge.example.com:8443 \
+ghostunnel client --listen localhost:8080 --target bridge.example.com:10443 \
   --cert client.pem --key client.key --cacert listener-ca.pem
 ```
 

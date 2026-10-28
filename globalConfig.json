@@ -523,7 +523,7 @@
                             "type": "text",
                             "label": "Port",
                             "field": "listen_port",
-                            "defaultValue": "8443",
+                            "defaultValue": "10443",
                             "help": "The port the mTLS listener binds to. Open it in the host firewall.",
                             "required": true,
                             "validators": [

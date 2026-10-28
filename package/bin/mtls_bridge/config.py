@@ -82,7 +82,7 @@ class Config:
     server_key: str
     ca_bundle: str
     listen_host: str = "0.0.0.0"
-    listen_port: int = 8443
+    listen_port: int = 10443
     server_key_password: Optional[str] = field(default=None, repr=False)
     upstream_url: str = DEFAULT_UPSTREAM_URL
     upstream_ca_bundle: Optional[str] = None

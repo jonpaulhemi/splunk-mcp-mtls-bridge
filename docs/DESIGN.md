@@ -7,7 +7,7 @@ Status: agreed 2026-10-26, revised 2026-10-27 after the wayfinder map (#3). The 
 The official Splunk MCP Server app only accepts `Authorization: Bearer <encrypted MCP token>`. This app terminates mutual TLS from non-person entity (NPE) MCP clients, maps each cert to a local Splunk account's MCP token, and forwards the call to the MCP Server app.
 
 ```
-MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0.1:8089/services/mcp
+MCP client (NPE cert) --mTLS--> bridge :10443 --HTTPS + Bearer--> splunkd 127.0.0.1:8089/services/mcp
 ```
 
 ## Scope (v1)
@@ -24,7 +24,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 
 ## Listener (inbound mTLS)
 
-- **Bind address:** `0.0.0.0:8443` by default.
+- **Bind address:** `0.0.0.0:10443` by default.
 - **TLS:** TLS 1.2 minimum with TLS 1.3 available, a modern cipher list, and `CERT_REQUIRED` against a configurable CA bundle.
 - **Server cert:** defaults to splunkd's `[sslConfig] serverCert`. Cert, key and key password can be overridden. The bridge warns at startup if it's serving Splunk's default self-signed cert, told by its issuer (`CN=SplunkCommonCA, O=Splunk`), not its path.
 - **CRL:** optional. The file must hold a CRL from every CA that issues client certs (and, in chain mode, from every CA in their chains), because OpenSSL rejects a cert whose issuer has no CRL. Checking is leaf by default, with chain as an option. A replacement file is swapped in on the config poll, and one that won't parse or has expired is refused. The bridge warns 24 hours before `nextUpdate`, and expiry handling is a setting: `fail_closed` (the default) or `fail_open`. The policy takes effect at the first poll after `nextUpdate`; until then OpenSSL itself refuses handshakes against the expired CRL.
