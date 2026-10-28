@@ -31,7 +31,7 @@ MCP client (NPE cert) --mTLS--> bridge :8443 --HTTPS + Bearer--> splunkd 127.0.0
 
 ## Identity and mapping
 
-- **Mapping row:** issuer DN (RFC 4514; case, spacing and the order inside a multi-valued RDN are ignored, and a type without a short name such as emailAddress matches as text or `#hex`), identity type (URI, DNS, email, UPN, IP or CN), identity value, Splunk account, encrypted MCP token and token expiry date.
+- **Mapping row:** issuer DN (RFC 4514; case, spacing and the order inside a multi-valued RDN are ignored, and a type without a short name such as emailAddress or serialNumber matches as text or `#hex`, under its X.520 name or its dotted OID), identity type (URI, DNS, email, UPN, IP or CN), identity value, Splunk account, encrypted MCP token and token expiry date.
 - **Matching:** a row matches if the cert carries that value in any field of that type. Matching two rows is rejected as ambiguous. The Mappings page refuses a row that duplicates another or can never match.
 - **Case rules:** DNS, email and UPN are case-insensitive. URI and CN are exact. IPs are canonicalised.
 - **Revocation without a CRL:** deleting a row revokes the cert at the bridge immediately.
@@ -51,7 +51,7 @@ Settled in the grilling for #41, which is the spec.
   - a flagged client sends no user header;
   - the header is malformed: a chain of DNs, unbalanced brackets, empty, not a DN, or over 4 KiB;
   - no rule matches, or two attribute rules do;
-  - the matching rule's role account didn't load (an unreadable token, say). The user never falls through to a broader rule.
+  - the matching rule's role account is unavailable (deleted, disabled or with an unreadable token), audited as `role_account_unavailable` with the rule and role account named. The user never falls through to a broader rule.
   - an unflagged client sends the header, `ping` and notifications included.
 - **Without a user:** a flagged client's `ping`, notifications and `/health` work without the header. Its `initialize` needs a user.
 - **Not forwarded:** the header never goes upstream, because the MCP Server doesn't read it.

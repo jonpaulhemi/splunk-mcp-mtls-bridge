@@ -153,8 +153,9 @@ The proxied-user rejection reasons:
 | `proxied_user_missing` | 403 | A client that proxies users sent no `X-ProxiedEntitiesChain`. |
 | `proxied_user_malformed` | 403 | The header isn't one DN: a chain, unbalanced brackets, empty, not a DN, or over 4 KiB. |
 | `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` and notifications included. |
-| `user_unmatched` | 403 | No user rule matches the user, or the matching rule's role account couldn't be loaded. |
+| `user_unmatched` | 403 | No user rule matches the user. |
 | `user_ambiguous` | 403 | The user matches no exact rule and more than one attribute rule. |
+| `role_account_unavailable` | 403 | The matching rule's role account is deleted, disabled or has no readable token. The event names the rule and role account. |
 
 ### CRL
 
