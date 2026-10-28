@@ -145,16 +145,18 @@ def test_client_not_proxying_users_still_uses_its_own_account(proxy, test_pki, u
     assert upstream.received[0].headers["Authorization"] == "Bearer " + MAPPED_TOKEN
 
 
-def test_rule_whose_role_account_is_missing_matches_no_one(test_pki, upstream, audit_path):
+def test_rule_whose_role_account_is_missing_is_refused_naming_it(test_pki, upstream, audit_path):
     config = _proxy_config(
         test_pki, upstream, audit_log=str(audit_path), user_rules=[UserRule("john", "dn", JOHN, "gone")]
     )
     with running_bridge(config) as bridge:
-        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
+        status, _, body = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: JOHN})
 
     assert status == 403
+    assert "role account" in body["error"]["message"]
     assert upstream.received == []
-    assert _events(audit_path)[0]["reason"] == "user_unmatched"
+    event = _events(audit_path)[0]
+    assert (event["reason"], event["user_rule"], event["role_account"]) == ("role_account_unavailable", "john", "gone")
 
 
 def test_ping_and_health_need_no_user(proxy, test_pki, upstream):
@@ -313,4 +315,20 @@ def test_exact_rule_whose_role_account_is_missing_does_not_fall_through(test_pki
 
     assert status == 403
     assert upstream.received == []
-    assert _events(audit_path)[0]["reason"] == "user_unmatched"
+    assert _events(audit_path)[0]["reason"] == "role_account_unavailable"
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        UserRule("john", "dn", "CN=John Smith,SERIALNUMBER=1234,OU=Users,O=Org", "analysts"),
+        UserRule("by_serial", "attributes", "serialNumber=1234", "analysts"),
+    ],
+)
+def test_user_dn_may_hold_other_x520_attributes(test_pki, upstream, audit_path, rule):
+    header = "CN=John Smith,serialNumber=1234,OU=Users,O=Org"
+    with running_bridge(_attribute_config(test_pki, upstream, audit_path, [rule])) as bridge:
+        status, _, _ = _proxy_client(bridge, test_pki).rpc("tools/list", headers={HEADER: header})
+
+    assert status == 200
+    assert _events(audit_path)[0]["user_rule"] == rule.name

@@ -21,8 +21,28 @@ _SHORT_NAMES = {
     "0.9.2342.19200300.100.1.1": "UID",
 }
 _OIDS_BY_NAME = {name: oid for oid, name in _SHORT_NAMES.items()}
-# Names other tools print for types the table lacks, accepted in pasted issuers.
-_ALIASES = {"EMAILADDRESS": "1.2.840.113549.1.9.1", "E": "1.2.840.113549.1.9.1"}
+# Names other tools print for types the table lacks, accepted in pasted DNs. They still render as OIDs.
+_ALIASES = {
+    "EMAILADDRESS": "1.2.840.113549.1.9.1",
+    "E": "1.2.840.113549.1.9.1",
+    # X.520 attribute types, as OpenSSL and Windows name them.
+    "SN": "2.5.4.4",
+    "SURNAME": "2.5.4.4",
+    "SERIALNUMBER": "2.5.4.5",
+    "TITLE": "2.5.4.12",
+    "DESCRIPTION": "2.5.4.13",
+    "BUSINESSCATEGORY": "2.5.4.15",
+    "POSTALCODE": "2.5.4.17",
+    "NAME": "2.5.4.41",
+    "GN": "2.5.4.42",
+    "G": "2.5.4.42",
+    "GIVENNAME": "2.5.4.42",
+    "INITIALS": "2.5.4.43",
+    "GENERATIONQUALIFIER": "2.5.4.44",
+    "DNQUALIFIER": "2.5.4.46",
+    "PSEUDONYM": "2.5.4.65",
+    "ORGANIZATIONIDENTIFIER": "2.5.4.97",
+}
 _COMMON_NAME = "2.5.4.3"
 
 _SPECIAL = ',+"\\<>;='

@@ -181,6 +181,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._peer = self._mapping = self._rejection = None
         self._user = None  # the ProxiedUser the call is for, when the client proxies users
         self._user_received = None  # the user header as received, for a refused proxied call
+        self._user_refusal = {}  # the user rule and role account, when that role account is unavailable
         try:
             try:
                 self._peer = resolver.peer_of(self.connection.getpeercert(binary_form=True))
@@ -211,6 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._rejection is not None:
             if self._user_received is not None:
                 fields["user_dn"] = self._user_received
+            fields.update(self._user_refusal)
             audit.write("rejection", reason=self._rejection, **fields, **(self._peer.describe() if self._peer else {}))
         elif self._mapping is not None:
             audit.write("call", **fields, **self._call_fields(elapsed))
@@ -268,6 +270,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._user = users.resolve(mapping, self.headers.get_all(users.HEADER), self._live.config)
             except users.UserRejection as rejection:
                 self._rejection, self._user_received = rejection.reason, rejection.received
+                if rejection.rule is not None:
+                    self._user_refusal = {"user_rule": rejection.rule, "role_account": rejection.role_account}
                 self._send_rpc_error(403, _ERR_FORBIDDEN, rejection.message, rpc_id)
                 return
         # Answered here, never upstream: every upstream request spends the account's rate limit, and the

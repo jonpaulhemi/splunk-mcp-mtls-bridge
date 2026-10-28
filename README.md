@@ -153,8 +153,9 @@ The proxied-user rejection reasons:
 | `proxied_user_missing` | 403 | A client that proxies users sent no `X-ProxiedEntitiesChain`. |
 | `proxied_user_malformed` | 403 | The header isn't one DN: a chain, unbalanced brackets, empty, not a DN, or over 4 KiB. |
 | `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` and notifications included. |
-| `user_unmatched` | 403 | No user rule matches the user, or the matching rule's role account couldn't be loaded. |
+| `user_unmatched` | 403 | No user rule matches the user. |
 | `user_ambiguous` | 403 | The user matches no exact rule and more than one attribute rule. |
+| `role_account_unavailable` | 403 | The matching rule's role account is deleted, disabled or has no readable token. The event names the rule and role account. |
 
 ### CRL
 
@@ -249,7 +250,10 @@ async def main():
     tls = ssl.create_default_context(cafile="listener-ca.pem")
     tls.load_cert_chain("client.pem", "client.key")
     async with httpx2.AsyncClient(verify=tls, timeout=httpx2.Timeout(30, read=300)) as http:
-        async with streamable_http_client("https://bridge.example.com:8443/services/mcp", http_client=http) as (read, write):
+        async with streamable_http_client("https://bridge.example.com:8443/services/mcp", http_client=http) as (
+            read,
+            write,
+        ):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 print([tool.name for tool in (await session.list_tools()).tools])

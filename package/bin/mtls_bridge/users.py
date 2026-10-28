@@ -22,23 +22,28 @@ MALFORMED = "proxied_user_malformed"
 NOT_ALLOWED = "proxied_user_not_allowed"
 UNMATCHED = "user_unmatched"
 AMBIGUOUS = "user_ambiguous"
+ROLE_ACCOUNT_UNAVAILABLE = "role_account_unavailable"
 _MESSAGES = {
     MISSING: f"this client proxies users; name the user in {HEADER}",
     MALFORMED: f"{HEADER} must hold one distinguished name, optionally in angle brackets",
     NOT_ALLOWED: f"this client is not allowed to name a user in {HEADER}",
     UNMATCHED: "no user rule matches the named user",
     AMBIGUOUS: "more than one user rule matches the named user",
+    ROLE_ACCOUNT_UNAVAILABLE: "the role account for the named user is unavailable",
 }
 
 ProxiedUser = collections.namedtuple("ProxiedUser", "dn rule role_account")
 
 
 class UserRejection(Exception):
-    def __init__(self, reason, received=None):
+    def __init__(self, reason, received=None, rule=None, role_account=None):
         super().__init__(reason)
         self.reason = reason
         # The header as received, cut to MAX_HEADER_CHARS; None if there was none.
         self.received = received
+        # The matching user rule and the role account it names, when that account is unavailable.
+        self.rule = rule
+        self.role_account = role_account
 
     @property
     def message(self):
@@ -117,9 +122,10 @@ def resolve(mapping, header_values, config):
     accounts = {account.name: account for account in config.role_accounts}
     # The matching rule decides even when its role account didn't load, so the user never falls
     # through to a broader rule's access.
-    if matches[0].role_account not in accounts:
-        raise UserRejection(UNMATCHED, received)
-    return ProxiedUser(dn, matches[0].name, accounts[matches[0].role_account])
+    rule = matches[0]
+    if rule.role_account not in accounts:
+        raise UserRejection(ROLE_ACCOUNT_UNAVAILABLE, received, rule.name, rule.role_account)
+    return ProxiedUser(dn, rule.name, accounts[rule.role_account])
 
 
 def _pairs(rdns):

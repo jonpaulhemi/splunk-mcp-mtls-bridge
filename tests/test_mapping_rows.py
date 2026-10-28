@@ -86,3 +86,17 @@ def test_identity_values_with_stray_spaces_still_match():
 def test_an_attribute_without_a_short_name_matches_in_any_common_spelling(spelling):
     rows = {"existing": _row(issuer="CN=Bridge Test CA,E=ca@bridge.test,O=Bridge Test")}
     assert "already" in mapping_row_problem("new", _row(issuer=spelling), rows)
+
+
+@pytest.mark.parametrize("name", ["SERIALNUMBER", "GIVENNAME", "SN", "TITLE", "POSTALCODE", "ORGANIZATIONIDENTIFIER"])
+def test_an_issuer_may_use_other_x520_attribute_names(name):
+    assert mapping_row_problem("agent_a", _row(issuer=f"{name}=42,CN=Bridge Test CA"), {}) is None
+
+
+def test_an_attribute_name_and_its_oid_describe_the_same_issuer():
+    # How a cert renders serialNumber=42: its dotted OID and the #hex of its DER PrintableString.
+    existing = {"rendered": _row(issuer="2.5.4.5=#13023432,CN=Bridge Test CA")}
+
+    problem = mapping_row_problem("typed", _row(issuer="serialNumber=42,CN=Bridge Test CA"), existing)
+
+    assert problem is not None and "rendered" in problem
