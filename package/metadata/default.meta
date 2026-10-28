@@ -2,9 +2,15 @@
 []
 access = read : [ * ], write : [ admin, sc_admin ]
 
-# Only admins may read the bridge's settings, its mappings, or the credential store entries
-# that hold their tokens. The daemon reads them with splunkd's own session key.
+# Only admins may read the bridge's settings, mappings, role accounts and user rules, or the
+# credential store entries that hold their tokens. The daemon reads them with splunkd's own session key.
 [ta_mtls_bridge_mappings]
+access = read : [ admin, sc_admin ], write : [ admin, sc_admin ]
+
+[ta_mtls_bridge_role_accounts]
+access = read : [ admin, sc_admin ], write : [ admin, sc_admin ]
+
+[ta_mtls_bridge_user_rules]
 access = read : [ admin, sc_admin ], write : [ admin, sc_admin ]
 
 [ta_mtls_bridge_settings]
