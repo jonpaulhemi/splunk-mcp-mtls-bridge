@@ -347,11 +347,11 @@ To build the installable app and run AppInspect, as CI does:
 
 ```sh
 .venv/bin/pip install -r requirements-build.txt
-PATH=.venv/bin:$PATH scripts/build_app.sh 0.2.0
+PATH=.venv/bin:$PATH scripts/build_app.sh 0.2.1
 ```
 
-This writes `output/TA-mtls-bridge-0.2.0.tgz`.
+This writes `output/TA-mtls-bridge-0.2.1.tgz`.
 
-To release, push a tag such as `v0.2.0`. CI tests it, builds the app at version 0.2.0 and attaches `TA-mtls-bridge-0.2.0.tgz` to a GitHub release for the tag.
+To release, push a tag such as `v0.2.1`. CI tests it, builds the app at version 0.2.1 and attaches `TA-mtls-bridge-0.2.1.tgz` to a GitHub release for the tag.
 
 To run the bridge outside Splunk, write a JSON file holding the `Config` fields and run `python -m mtls_bridge bridge.json` from `package/bin`.
