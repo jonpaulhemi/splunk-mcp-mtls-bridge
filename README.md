@@ -129,7 +129,7 @@ The tabs refuse a rule whose value isn't a DN, a rule that duplicates another ru
 1. In Splunk, create a role for each group of users with the indexes and capabilities that group should have. Include whatever the MCP Server app needs for tool access, as for any mapped account.
 2. Create a local Splunk account for each group (for example `mcp_analyst`), with only that group's role.
 3. Sign in to the MCP Server app as an admin and create an encrypted MCP token for each of those accounts (see [Tokens](#mappings) above).
-4. On the **Role accounts** tab, add each account with its token and the expiry date you chose. The bridge checks each new token upstream once and watches it exactly as it does mapping tokens; `/health` lists role accounts by name.
+4. On the **Role accounts** tab, add each account with its token and the expiry date you chose. The bridge checks each new token upstream once and watches it exactly as it does mapping tokens. Its warnings show in the operational log and in the overall `/health` status.
 5. On the **User rules** tab, add rules sending users to role accounts.
 6. On the **Mappings** tab, add the client's row with **Proxies users** checked.
 
@@ -326,9 +326,9 @@ Then point the client at the local port with [`mcp-remote`](https://www.npmjs.co
   A GET on `/health` from a mapped cert returns JSON with:
   - `status`: `ok`; `warning` when a token is within 14 days of its expiry date or past it; or `degraded` when a token is invalid or the CRL has expired;
   - `version`, and `crl` (`present`, `next_update`, `expired`);
-  - per mapping with a token, and per role account (also with its `name`): `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401).
+  - under `mappings`, the calling client's own token: `account`, `token_expiry`, `days_remaining`, `expiry_status` (`ok`, `expiring`, `expired`) and `token_status` (`ok`, `invalid`, `unchecked`, or `unverified` when the check got neither success nor 401). A client that proxies users has no token of its own, so its list is empty. `role_accounts` is always empty.
 
-  It never includes tokens. Unmapped certs get 403. Other GETs, and every method other than POST, get HTTP 405 and are audited.
+  `status` covers every mapping and role account, but a client only sees its own entry, so one compromised cert can't list the bridge's accounts. The operational log has the warnings for every token. It never includes tokens. Unmapped certs get 403. Other GETs, and every method other than POST, get HTTP 405 and are audited.
 - **Other errors clients may see:** 411 for a POST without `Content-Length` (chunked request bodies aren't accepted), 502 when the MCP Server is unreachable or rejects the bridge's token, and 504 when it times out (after 300 seconds).
 - **Out of scope:** search head clusters, Splunk Cloud and OCSP.
 
