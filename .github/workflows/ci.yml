@@ -13,7 +13,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which has no Python 3.9 for setup-python.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # Splunk Enterprise 10.4 runs app Python on 3.9 or 3.13.
@@ -29,7 +30,7 @@ jobs:
       - run: pytest -v
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

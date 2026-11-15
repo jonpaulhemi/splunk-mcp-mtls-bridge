@@ -17,7 +17,7 @@ import time
 import xml.etree.ElementTree as ElementTree
 
 from . import splunk_config
-from .server import ApplyError, BridgeServer
+from .server import ApplyError, BridgeServer, ListenerLost
 
 log = logging.getLogger("mtls_bridge")
 
@@ -144,6 +144,9 @@ def _reload(bridge, inputs, splunk_home):
     try:
         # Applied even when unchanged, to pick up a CA bundle or cert replaced at the same path.
         bridge.apply(config)
+    except ListenerLost as exc:
+        log.error("applied the new mappings, but nothing is listening; exiting so splunkd restarts the bridge: %s", exc)
+        return False
     except ApplyError as exc:
         log.error("applied the new mappings; keeping the last good configuration for the %s", exc)
         return True

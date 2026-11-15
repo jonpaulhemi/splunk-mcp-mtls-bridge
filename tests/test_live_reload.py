@@ -5,8 +5,9 @@ import threading
 
 import pytest
 
+from mtls_bridge import server
 from mtls_bridge.config import Mapping
-from mtls_bridge.server import ApplyError
+from mtls_bridge.server import ApplyError, ListenerLost
 
 import pki
 from harness import Client, client_of, make_config, running_bridge, wait_for
@@ -75,3 +76,19 @@ def test_host_change_on_the_same_port_rebinds(test_pki, upstream, unused_port):
 
         assert bridge.address == ("127.0.0.1", unused_port)
         assert Client(bridge.address, test_pki.ca.cert_path, test_pki.mapped).rpc("tools/list")[0] == 200
+
+
+def test_a_move_that_loses_the_port_says_nothing_is_listening(test_pki, upstream, unused_port, monkeypatch):
+    # Another process takes the port in the gap between closing the old listener and reopening it.
+    config = make_config(test_pki, upstream, listen_host="0.0.0.0", listen_port=unused_port)
+    with running_bridge(config) as bridge:
+
+        def port_taken(*args):
+            raise OSError(98, "Address already in use")
+
+        monkeypatch.setattr(server, "_Listener", port_taken)
+        with pytest.raises(ListenerLost, match="could not be reopened"):
+            bridge.apply(make_config(test_pki, upstream, listen_host="127.0.0.1", listen_port=unused_port, mappings=[]))
+
+        assert bridge.address is None
+        assert bridge.config.mappings == []
