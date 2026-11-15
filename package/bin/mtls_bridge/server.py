@@ -426,7 +426,36 @@ class _Listener(ThreadingHTTPServer):
 
     def __init__(self, bridge, address):
         self.bridge = bridge
+        self._open = {}  # each open connection's socket -> its peer IP
+        self._per_ip = collections.Counter()
+        self._open_lock = threading.Lock()
         super().__init__(address, _Handler)
+
+    def verify_request(self, request, client_address):
+        # Runs on the accept thread, before a worker thread exists: an unauthenticated peer that opens
+        # many connections and sends nothing is stopped here, not after holding a thread each.
+        config = self.bridge.live.config
+        ip = client_address[0]
+        with self._open_lock:
+            if len(self._open) >= config.max_connections:
+                refused = f"too many connections to the bridge (limit {config.max_connections})"
+            elif self._per_ip[ip] >= config.max_connections_per_ip:
+                refused = f"too many connections from this address (limit {config.max_connections_per_ip})"
+            else:
+                self._open[request] = ip
+                self._per_ip[ip] += 1
+                return True
+        self.bridge.handshake_failures.record(ip, client_address[1], None, refused)
+        return False
+
+    def shutdown_request(self, request):
+        with self._open_lock:
+            ip = self._open.pop(request, None)
+            if ip is not None:
+                self._per_ip[ip] -= 1
+                if not self._per_ip[ip]:
+                    del self._per_ip[ip]
+        super().shutdown_request(request)
 
     def finish_request(self, request, client_address):
         # TLS starts here, in the connection's worker thread, so a slow client can't stall accept(),

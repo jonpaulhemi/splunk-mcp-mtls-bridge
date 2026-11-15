@@ -98,6 +98,10 @@ class Config:
     # Matches the MCP Server app's own payload cap.
     max_body_bytes: int = 128 * 1024
     max_concurrent_per_identity: int = 10
+    # Open connections, counted from accept() and before the TLS handshake. Beyond either cap a new
+    # connection is closed at once, without a thread.
+    max_connections: int = 256
+    max_connections_per_ip: int = 64
     # Each user behind a client that proxies users also has this cap, keyed by canonical DN.
     max_concurrent_per_user: int = 2
     # A CRL file (PEM or DER, one CRL per issuing CA); None turns revocation checking off.
