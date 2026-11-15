@@ -25,6 +25,13 @@ Search head clusters, Splunk Cloud and OCSP are out of scope.
 
 The bridge starts within a minute of the Listener tab getting a client CA bundle. After that it picks up every change within 30 seconds, with no restart. Its operational log is `$SPLUNK_HOME/var/log/splunk/ta_mtls_bridge.log`.
 
+**Upgrading to 0.2.2.** Four behaviour changes from the security fixes:
+
+- A client's `/health` now lists only its own token, not every account. The overall `status` still covers every token.
+- An MCP Server URL whose host isn't loopback is refused unless the hostname check is on and its CA bundle isn't Splunk's default. See [Remote MCP Server](#remote-mcp-server). The default `127.0.0.1` URL is unaffected.
+- After a CRL, client CA bundle or listener cert change, a request on a connection opened before it gets HTTP 421 and the client must reconnect. Connections older than 5 minutes are closed after their next response.
+- At most 256 connections are open at once, 64 from one IP address.
+
 **Upgrading to 0.2.1.** The default port is now 10443 (it was 8443). A bridge whose Listener tab has been saved keeps the port saved there, so it doesn't move. To move it, change the Port on the Listener tab, then update the firewall and your clients' URLs.
 
 **Upgrading from 0.1.0.** Splunk never starts the bridge daemon in 0.1.0, because its `README/inputs.conf.spec` declares no parameter. Install 0.1.1 or later over it (Install app from file, with "Upgrade app" ticked) and restart Splunk. If you patched the spec by hand, the upgrade replaces your edit. If you added `interval =` to it, remove it: with that line Splunk starts the daemon but doesn't restart it after it exits.
@@ -360,11 +367,11 @@ To build the installable app and run AppInspect, as CI does:
 
 ```sh
 .venv/bin/pip install -r requirements-build.txt
-PATH=.venv/bin:$PATH scripts/build_app.sh 0.2.1
+PATH=.venv/bin:$PATH scripts/build_app.sh 0.2.2
 ```
 
-This writes `output/TA-mtls-bridge-0.2.1.tgz`.
+This writes `output/TA-mtls-bridge-0.2.2.tgz`.
 
-To release, push a tag such as `v0.2.1`. CI tests it, builds the app at version 0.2.1 and attaches `TA-mtls-bridge-0.2.1.tgz` to a GitHub release for the tag.
+To release, push a tag such as `v0.2.2`. CI tests it, builds the app at version 0.2.2 and attaches `TA-mtls-bridge-0.2.2.tgz` to a GitHub release for the tag.
 
 To run the bridge outside Splunk, write a JSON file holding the `Config` fields and run `python -m mtls_bridge bridge.json` from `package/bin`.
