@@ -13,7 +13,8 @@ import pytest
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from mtls_bridge import splunk_config
+from mtls_bridge import modinput, splunk_config
+from mtls_bridge.server import ApplyError, ListenerLost
 
 import pki
 from fake_splunkd import AUDIT_INPUT_PATH
@@ -391,3 +392,24 @@ def test_unusable_crl_at_startup_exits_with_an_error_in_the_log(test_pki, splunk
     log = _log(splunk_home)
     assert "cannot start" in log and "CRL" in log
     assert b"Traceback" not in process.stderr.read()
+
+
+class _ApplyFails:
+    config = None
+
+    def __init__(self, error):
+        self.error = error
+
+    def apply(self, config):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "keeps_running"), [(ApplyError("bad cert"), True), (ListenerLost("port gone"), False)]
+)
+def test_daemon_exits_for_a_restart_only_when_nothing_is_listening(monkeypatch, error, keeps_running):
+    monkeypatch.setattr(splunk_config, "load", lambda *args: object())
+    monkeypatch.setattr(splunk_config, "sync_audit_input", lambda *args: None)
+    inputs = {"server_uri": "https://127.0.0.1:8089", "session_key": SESSION_KEY}
+
+    assert modinput._reload(_ApplyFails(error), inputs, "/opt/splunk") is keeps_running

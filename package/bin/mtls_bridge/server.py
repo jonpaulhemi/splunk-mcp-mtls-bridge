@@ -110,6 +110,11 @@ class ApplyError(Exception):
     """Part of a new config couldn't be applied; the rest was."""
 
 
+class ListenerLost(ApplyError):
+    """A failed move closed the listener and it couldn't come back: nothing is listening. The new mappings
+    and tokens were still applied, but the bridge must restart to serve again."""
+
+
 _TLS_FIELDS = ("ca_bundle", "server_cert", "server_key", "server_key_password", "crl_file", "crl_check", "crl_expiry")
 _UPSTREAM_FIELDS = ("upstream_url", "upstream_ca_bundle", "upstream_verify_hostname")
 _ADDRESS_FIELDS = ("listen_host", "listen_port")
@@ -117,6 +122,10 @@ _ADDRESS_FIELDS = ("listen_host", "listen_port")
 
 def _fields(config, names):
     return {name: getattr(config, name) for name in names}
+
+
+class _NothingListening(OSError):
+    """_bind closed the current listener for a move, and neither the new nor the old address would bind."""
 
 
 # What one request is served with, swapped as a whole when the config changes.
@@ -469,7 +478,8 @@ class BridgeServer:
 
     @property
     def address(self):
-        return self._listener.server_address[:2]
+        """The address being listened on, or None after ListenerLost."""
+        return self._listener.server_address[:2] if self._listener is not None else None
 
     def start(self):
         self.handshake_failures.start()
@@ -501,9 +511,13 @@ class BridgeServer:
             config = dataclasses.replace(config, **_fields(live.config, _UPSTREAM_FIELDS))
             upstream = live.upstream
         listener = None
+        lost = None
         if config.listen_address != live.config.listen_address:
             try:
                 listener = self._bind(config.listen_address)
+            except _NothingListening as exc:
+                lost = f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}"
+                config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
             except OSError as exc:
                 problems.append(f"cannot listen on {config.listen_host}:{config.listen_port}: {exc}")
                 config = dataclasses.replace(config, **_fields(live.config, _ADDRESS_FIELDS))
@@ -519,6 +533,8 @@ class BridgeServer:
             old.shutdown()
             old.server_close()
             log.info("listener moved to %s:%s", *self.address)
+        if lost is not None:
+            raise ListenerLost("; ".join([lost, *problems]))
         if problems:
             raise ApplyError("; ".join(problems))
 
@@ -539,7 +555,8 @@ class BridgeServer:
         """A listener on ``address``. Raises OSError, leaving the current listener serving, if it can't bind.
 
         If the port is held by the current listener (say a host change from 0.0.0.0 to 127.0.0.1 on
-        the same port), the current one closes first and comes back if the new bind fails.
+        the same port), the current one closes first and comes back if the new bind fails. If it can't
+        come back either (another process took the port in the gap), raises _NothingListening.
         """
         try:
             return _Listener(self, address)
@@ -551,8 +568,13 @@ class BridgeServer:
         self._listener.server_close()
         try:
             return _Listener(self, address)
-        except OSError:
-            self._listener = _Listener(self, current)
+        except OSError as exc:
+            try:
+                self._listener = _Listener(self, current)
+            except OSError as restore:
+                self._listener = None
+                reopen = f"{current[0]}:{current[1]} could not be reopened: {restore}"
+                raise _NothingListening(f"{exc}; and {reopen}") from restore
             self._start_serving(self._listener)
             raise
 
@@ -560,8 +582,9 @@ class BridgeServer:
         threading.Thread(target=listener.serve_forever, args=(0.1,), name="mtls-bridge", daemon=True).start()
 
     def stop(self):
-        self._listener.shutdown()
-        self._listener.server_close()
+        if self._listener is not None:
+            self._listener.shutdown()
+            self._listener.server_close()
         self.handshake_failures.stop()
         self.tokens.stop()
         self._crl.close()
