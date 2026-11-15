@@ -240,10 +240,24 @@ def _pem_blocks(data, label):
 
 def load(path):
     """Parse the first certificate in a PEM or DER file."""
+    return load_all(path)[0]
+
+
+def load_all(path):
+    """Parse every certificate in a PEM file, or the one in a DER file."""
     with open(path, "rb") as handle:
         data = handle.read()
-    blocks = _pem_blocks(data, b"CERTIFICATE")
-    return parse(blocks[0] if blocks else data)
+    return [parse(block) for block in _pem_blocks(data, b"CERTIFICATE")] or [parse(data)]
+
+
+# The CA that signs the server cert every Splunk install generates for itself: the same name everywhere.
+_SPLUNK_DEFAULT_CA = {"2.5.4.3": "SplunkCommonCA", "2.5.4.10": "Splunk"}
+
+
+def is_splunk_default_ca(name):
+    """True if ``name`` (a Certificate's issuer or subject) is Splunk's default CA."""
+    values = {attribute.oid: attribute.value for rdn in name for attribute in rdn}
+    return all(values.get(oid) == value for oid, value in _SPLUNK_DEFAULT_CA.items())
 
 
 _UTC_TIME = 0x17

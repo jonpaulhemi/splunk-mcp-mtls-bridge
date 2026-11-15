@@ -54,18 +54,12 @@ def listener_context(config):
     return context
 
 
-# The CA that signs the server cert every Splunk install generates for itself.
-_SPLUNK_DEFAULT_CA = {"2.5.4.3": "SplunkCommonCA", "2.5.4.10": "Splunk"}
-
-
 def _is_splunk_default_cert(path):
     """True if the cert at ``path`` was issued by Splunk's default CA. Told by its issuer, not its path."""
     try:
-        issuer = certificate.load(path).issuer
+        return certificate.is_splunk_default_ca(certificate.load(path).issuer)
     except (OSError, certificate.CertificateError):
         return False
-    names = {attribute.oid: attribute.value for rdn in issuer for attribute in rdn}
-    return all(names.get(oid) == value for oid, value in _SPLUNK_DEFAULT_CA.items())
 
 
 def _warn_if_default_cert(config):

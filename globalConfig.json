@@ -655,7 +655,7 @@
                             "type": "checkbox",
                             "label": "Check MCP Server hostname",
                             "field": "upstream_verify_hostname",
-                            "help": "Check that splunkd's certificate names the MCP Server URL's host. Splunk's default certificate doesn't name 127.0.0.1."
+                            "help": "Check that splunkd's certificate names the MCP Server URL's host. Splunk's default certificate doesn't name 127.0.0.1. Required, with a CA bundle other than Splunk's default, when the URL's host isn't loopback."
                         }
                     ]
                 },

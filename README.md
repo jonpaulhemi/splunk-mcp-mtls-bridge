@@ -40,7 +40,7 @@ The bridge starts within a minute of the Listener tab getting a client CA bundle
 | Listener certificate, key, key password | The cert clients see. Leave the certificate empty to reuse splunkd's server cert (`[sslConfig] serverCert`). Leave the key empty if the certificate file also holds the key. With no password set, the bridge also tries Splunk's default key password. |
 | Max concurrent requests per user | How many calls one [proxied user](#proxied-users) may have in flight at once (default 2). The client's own limit of 10 still applies. |
 | Client CRL file, CRL check depth, When the CRL expires | Revocation checking. See [CRL](#crl) below. |
-| MCP Server URL, CA bundle, hostname check | Where the MCP Server app listens. The defaults suit an MCP Server app on the same search head. |
+| MCP Server URL, CA bundle, hostname check | Where the MCP Server app listens. The defaults suit an MCP Server app on the same search head. For one on another host, see [Remote MCP Server](#remote-mcp-server). |
 
 **Install a listener cert from your PKI.** Splunk's default server cert is self-signed, and every Splunk install shares its CA. If the listener serves it, the bridge logs a warning in its operational log at startup. Fix this either way:
 
@@ -48,6 +48,15 @@ The bridge starts within a minute of the Listener tab getting a client CA bundle
 - set a separate cert, key and key password on this tab.
 
 Clients must trust the CA that issued the listener cert.
+
+#### Remote MCP Server
+
+The bridge sends every mapping's and role account's token to the MCP Server URL, so it has to be sure who answers. When the URL's host isn't loopback (`127.0.0.1`, `::1` or `localhost`), the bridge refuses the settings unless:
+
+- **Check MCP Server hostname** is on, and the remote splunkd's certificate names the URL's host; and
+- the **MCP Server CA bundle** is set to your PKI's CA, not Splunk's default `cacert.pem`. Splunk's default CA (SplunkCommonCA) is the same on every install, so anyone with any Splunk install could pose as the remote server.
+
+A refused setting is logged in the operational log. At startup the bridge doesn't start; on a later change it keeps using the last good MCP Server settings.
 
 ### Mappings
 
