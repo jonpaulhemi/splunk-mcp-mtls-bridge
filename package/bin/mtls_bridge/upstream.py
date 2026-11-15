@@ -3,10 +3,13 @@
 import collections
 import contextlib
 import http.client
+import ipaddress
 import re
 import socket
 import ssl
 import urllib.parse
+
+from . import certificate
 
 # Request headers a client may pass through, with the shape their value must have.
 # MCP-Protocol-Version is part of MCP's HTTP transport: without it the server assumes an old revision.
@@ -32,7 +35,41 @@ class UpstreamTimeout(Exception):
     """The upstream stopped answering for longer than the read timeout."""
 
 
+def _is_loopback(host):
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _trusts_splunk_default_ca(ca_bundle):
+    try:
+        return any(certificate.is_splunk_default_ca(cert.subject) for cert in certificate.load_all(ca_bundle))
+    except certificate.CertificateError:
+        return False  # ssl reports a bundle it can't use
+
+
+def _check_remote_trust(config, host):
+    """Refuse settings that would hand tokens to anyone holding a cert from some Splunk install's default
+    CA. Loopback is exempt: only this host can answer there."""
+    if _is_loopback(host):
+        return
+    if not config.upstream_verify_hostname:
+        raise ValueError(
+            f"the MCP Server URL's host {host} isn't loopback, so the MCP Server hostname check must be on"
+        )
+    if config.upstream_ca_bundle and _trusts_splunk_default_ca(config.upstream_ca_bundle):
+        raise ValueError(
+            f"the MCP Server URL's host {host} isn't loopback, so the MCP Server CA bundle must not hold "
+            "Splunk's default CA (SplunkCommonCA), which every Splunk install shares"
+        )
+
+
 def tls_context(config):
+    """The context for connecting to the upstream. Raises ValueError for unsafe remote-upstream settings."""
+    _check_remote_trust(config, urllib.parse.urlsplit(config.upstream_url).hostname)
     context = ssl.create_default_context(cafile=config.upstream_ca_bundle)
     context.check_hostname = config.upstream_verify_hostname
     return context
