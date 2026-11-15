@@ -262,7 +262,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._rejection is not None:
             self._send_rpc_error(403, _ERR_FORBIDDEN, f"client certificate is {self._rejection}")
             return
-        self._send_json(200, self.server.bridge.health())
+        self._send_json(200, self.server.bridge.health(client=self._mapping))
 
     def _post(self):
         bridge = self.server.bridge
@@ -596,9 +596,14 @@ class BridgeServer:
         self.tokens.warn_expiring(today or datetime.date.today())
         self.tokens.check_new()
 
-    def health(self, today=None):
+    def health(self, today=None, client=None):
         """What /health returns: the bridge's status, its CRL, and each mapping's and role account's token.
-        No token values."""
+        No token values.
+
+        Given the ``client`` mapping asking, the token entries are cut to that client's own: its mapping's
+        token, or none for a client that proxies users. The status still covers every token, so a client
+        sees the bridge is degraded without learning which accounts exist.
+        """
         live = self.live
         today = today or datetime.date.today()
         mappings = self.tokens.report(_token_mappings(live.config), today)
@@ -607,6 +612,9 @@ class BridgeServer:
             for role, entry in zip(live.config.role_accounts, self.tokens.report(live.config.role_accounts, today))
         ]
         holders = mappings + role_accounts
+        if client is not None:
+            own = [] if client.proxies_users else [client]
+            mappings, role_accounts = self.tokens.report(own, today), []
         next_update = live.crl.next_update
         crl_expired = bool(
             live.crl.refuse_all

@@ -184,7 +184,7 @@ def test_health_without_a_crl(test_pki, upstream):
     assert health["mappings"][0]["days_remaining"] is None
 
 
-def test_health_lists_every_mapping(test_pki, upstream):
+def _with_another_mapping(test_pki, upstream):
     other = Mapping(
         issuer=test_pki.other_ca.issuer_dn,
         identity_type="URI",
@@ -192,11 +192,38 @@ def test_health_lists_every_mapping(test_pki, upstream):
         account="svc_other",
         token="other-token",
     )
-    config = make_config(test_pki, upstream)
-    with running_bridge(dataclasses.replace(config, mappings=[*config.mappings, other])) as bridge:
+    config = make_proxy_config(test_pki, upstream)
+    return dataclasses.replace(config, mappings=[*config.mappings, other]), other
+
+
+def test_a_client_sees_only_its_own_token(test_pki, upstream):
+    config, _ = _with_another_mapping(test_pki, upstream)
+    with running_bridge(config) as bridge:
         _, health = client_of(bridge, test_pki, test_pki.mapped).health()
 
+    assert [m["account"] for m in health["mappings"]] == ["svc_agent_a"]
+    assert health["role_accounts"] == []
+    for name in (b"svc_other", b"mcp_analyst", b"mcp_engineer", b"analysts", b"engineers"):
+        assert name not in json.dumps(health).encode()
+
+
+def test_a_clients_status_still_covers_every_token(test_pki, upstream):
+    config, other = _with_another_mapping(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        bridge.tokens.rejected(other)
+        _, health = client_of(bridge, test_pki, test_pki.mapped).health()
+
+    assert health["status"] == "degraded"
+    assert health["mappings"][0]["token_status"] != "invalid"
+
+
+def test_the_bridge_itself_still_reports_every_token(test_pki, upstream):
+    config, _ = _with_another_mapping(test_pki, upstream)
+    with running_bridge(config) as bridge:
+        health = bridge.health()
+
     assert [m["account"] for m in health["mappings"]] == ["svc_agent_a", "svc_other"]
+    assert [r["name"] for r in health["role_accounts"]] == ["analysts", "engineers"]
     assert b"other-token" not in json.dumps(health).encode()
 
 
@@ -266,8 +293,8 @@ def _role_accounts_expiring_in(days, test_pki, upstream, **overrides):
 
 
 def _role_health(bridge, test_pki):
-    _, health = client_of(bridge, test_pki, test_pki.mapped).health()
-    return health
+    """The full report, as the bridge itself sees it: no client's /health lists role accounts."""
+    return bridge.health()
 
 
 def test_new_role_account_tokens_are_checked_upstream(test_pki, upstream):

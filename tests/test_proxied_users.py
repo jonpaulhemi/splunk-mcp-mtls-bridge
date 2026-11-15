@@ -168,8 +168,8 @@ def test_ping_and_health_need_no_user(proxy, test_pki, upstream):
     assert (status, body) == (200, {"jsonrpc": "2.0", "id": 2, "result": {}})
     assert health_status == 200
     assert upstream.received == []
-    # A proxying client has no token of its own to report.
-    assert [m["account"] for m in health["mappings"]] == ["svc_agent_a"]
+    # A proxying client has no token of its own to report, and sees no one else's.
+    assert (health["mappings"], health["role_accounts"]) == ([], [])
 
 
 def test_changed_rules_apply_without_a_restart(test_pki, upstream):
