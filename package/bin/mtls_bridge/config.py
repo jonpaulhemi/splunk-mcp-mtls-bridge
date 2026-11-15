@@ -90,6 +90,8 @@ class Config:
     handshake_timeout: float = 10.0
     # How long to wait on a quiet client between and during requests, after the handshake.
     client_timeout: float = 30.0
+    # A connection is closed after the first response sent once it's this old, so it handshakes again.
+    max_connection_seconds: float = 300.0
     upstream_connect_timeout: float = 10.0
     # Longest wait for the upstream to send anything, once connected.
     upstream_timeout: float = 300.0

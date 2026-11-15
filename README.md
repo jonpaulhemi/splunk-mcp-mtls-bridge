@@ -166,6 +166,7 @@ The proxied-user rejection reasons:
 | `proxied_user_not_allowed` | 403 | A client that doesn't proxy users sent the header, `ping` and notifications included. |
 | `user_unmatched` | 403 | No user rule matches the user. |
 | `user_ambiguous` | 403 | The user matches no exact rule and more than one attribute rule. |
+| `stale_connection` | 421 | The request came on a connection opened before the CRL, client CA bundle or listener cert changed. The client should reconnect. |
 | `role_account_unavailable` | 403 | The matching rule's role account is deleted, disabled or has no readable token. The event names the rule and role account. |
 
 ### CRL
@@ -177,6 +178,8 @@ CRL checking is optional. When it's off, deleting a mapping is how you revoke a 
 - **When the CRL expires:** "Reject all clients (fail closed)", the default, refuses every handshake until a fresh CRL arrives. "Stop checking revocation and warn (fail open)" stops checking revocation and adds a warning to every call and rejection audit event.
 
 The bridge re-reads the file every 30 seconds. It refuses a replacement that won't parse, that OpenSSL won't load, or that isn't valid yet or has already expired, and keeps enforcing the previous one. At startup there's no previous one, so a file it can't use stops the bridge from starting, with the reason in its operational log. An expired CRL at startup is accepted and the expiry setting applies. The bridge warns 24 hours before `nextUpdate`.
+
+A new CRL also reaches connections that are already open. When the CRL, client CA bundle or listener cert changes, the next request on a connection opened before the change gets HTTP 421 and the connection closes, so the client reconnects and its cert is checked again. Each such refusal is audited with reason `stale_connection`. Separately, a connection older than 5 minutes is closed after its next response.
 
 ## Client certificate profile
 
