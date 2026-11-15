@@ -37,6 +37,7 @@ _ERR_UPSTREAM = -32002
 _ERR_CREDENTIAL = -32003
 _ERR_BUSY = -32004
 _ERR_TOO_LARGE = -32005
+_ERR_STALE_CONNECTION = -32006
 
 # MCP revisions the bridge's local initialize answer can name. A client asking for another is offered
 # the latest; the methods this bridge's clients use look the same in all of them.
@@ -197,6 +198,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._mapping = resolver.resolve(self._live.config.mappings, self._peer)
             except resolver.Rejection as rejection:
                 self._rejection = rejection.reason
+            if self.connection.bridge_tls_context is not self._live.tls_context:
+                # The cert was checked against a CA bundle or CRL that has since been replaced: a revoked
+                # cert must not keep working on a connection opened before the new CRL loaded.
+                self._rejection, self._mapping = "stale_connection", None
+                handle = self._stale_connection
             handle()
         finally:
             try:
@@ -371,6 +377,12 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return self.rfile.read(int(length))
 
+    def _stale_connection(self):
+        # 421 tells the client this connection, not the request, is the problem, so it may retry on a new one.
+        self.close_connection = True
+        message = "the bridge's TLS settings changed since this connection opened; reconnect"
+        self._send_rpc_error(421, _ERR_STALE_CONNECTION, message)
+
     def _method_not_allowed(self):
         self.close_connection = True
         self._send_rpc_error(405, _ERR_INVALID_REQUEST, "only POST is supported", headers=[("Allow", "POST")])
@@ -392,6 +404,9 @@ class _Handler(BaseHTTPRequestHandler):
         for name, value in headers:
             self.send_header(name, value)
         self.send_header("X-MCP-Request-Id", self.bridge_request_id)
+        if time.monotonic() - self.connection.bridge_opened >= self._live.config.max_connection_seconds:
+            # Sets close_connection too: the client's next request handshakes again.
+            self.send_header("Connection", "close")
         self.end_headers()
         self._headers_sent = True
 
@@ -423,6 +438,9 @@ class _Listener(ThreadingHTTPServer):
             return
         request.settimeout(live.config.handshake_timeout)
         tls = live.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        # What each request on this connection checks: the context its cert was verified with, and its age.
+        tls.bridge_tls_context = live.tls_context
+        tls.bridge_opened = time.monotonic()
         try:
             self._handshake_and_handle(tls, client_address, live.config)
         finally:
@@ -484,11 +502,11 @@ class BridgeServer:
         """Serve ``config`` from the next request on. Call it from one thread only, as ``stop`` is.
 
         Mappings and tokens always apply, so a deleted mapping is revoked even when the rest can't be.
-        A changed CA bundle, cert, key or key password rebuilds the SSLContext for new connections
-        (open keep-alive connections keep theirs until they close); a changed bind address or port
-        moves the listener. If either fails, or the upstream settings can't be loaded, those parts
-        keep their current values and ApplyError says why. The audit file and handshake window are
-        fixed at startup.
+        A changed CA bundle, cert, key, key password or CRL rebuilds the SSLContext for new
+        connections; a keep-alive connection opened before that gets 421 on its next request, so it
+        reconnects and is checked again. A changed bind address or port moves the listener. If
+        either fails, or the upstream settings can't be loaded, those parts keep their current values
+        and ApplyError says why. The audit file and handshake window are fixed at startup.
         """
         live = self.live
         problems = []
